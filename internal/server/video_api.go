@@ -148,6 +148,11 @@ type videoJavManualScrapeRequest struct {
 	IsUncensored *bool    `json:"is_uncensored"`
 }
 
+type videoJavExistingLinkRequest struct {
+	LocationID int64  `json:"location_id"`
+	Code       string `json:"code"`
+}
+
 type videoJavScrapeInfoResponse struct {
 	Code         string   `json:"code"`
 	Title        string   `json:"title"`
@@ -490,6 +495,10 @@ func playVideoFile(c *gin.Context) {
 }
 
 func revealVideoLocation(c *gin.Context) {
+	if isRemoteRequest(c.Request.RemoteAddr) {
+		respondLocalizedError(c, http.StatusForbidden, "通过局域网访问时无法打开文件所在位置", "Cannot reveal file locations when accessing over the local network")
+		return
+	}
 	if runtimeconfig.DisableDesktopIntegration() {
 		respondLocalizedError(c, http.StatusNotImplemented, "当前部署模式已禁用打开文件位置", "Desktop file revealing is disabled")
 		return
@@ -754,8 +763,8 @@ func lookupVideoJavScrapeByProvider(c *gin.Context, provider jav.Provider) {
 
 func parseVideoJavScrapeLookupProvider(value string) (jav.Provider, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "javdb":
-		return jav.ProviderJavDB, true
+	case "avmoo":
+		return jav.ProviderAvmoo, true
 	case "javbus":
 		return jav.ProviderJavBus, true
 	case "avsox":
@@ -767,13 +776,76 @@ func parseVideoJavScrapeLookupProvider(value string) (jav.Provider, bool) {
 
 func videoJavScrapeLookupProviderLabel(provider jav.Provider) string {
 	switch provider {
+	case jav.ProviderAvmoo:
+		return "AvMoo"
 	case jav.ProviderJavBus:
 		return "JavBus"
 	case jav.ProviderAvsox:
 		return "AVSOX"
 	default:
-		return "JavDB"
+		return provider.String()
 	}
+}
+
+func linkVideoExistingJav(c *gin.Context) {
+	id, ok := parsePositiveVideoID(c)
+	if !ok {
+		return
+	}
+
+	var req videoJavExistingLinkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondLocalizedError(c, http.StatusBadRequest, "关联番号请求无效", "Invalid JAV link request")
+		return
+	}
+	code, valid := normalizeForcedJavScrapeCode(req.Code)
+	if !valid {
+		respondLocalizedError(c, http.StatusBadRequest, "番号无效", "Invalid JAV code")
+		return
+	}
+	if req.LocationID <= 0 {
+		respondLocalizedError(c, http.StatusBadRequest, "视频位置 ID 不能为空", "Video location ID is required")
+		return
+	}
+
+	loc, err := dbpkg.GetActiveVideoLocation(c.Request.Context(), id, req.LocationID)
+	if err != nil {
+		logging.Error("load video location for existing jav link video=%d location=%d: %v", id, req.LocationID, err)
+		respondLocalizedError(c, http.StatusInternalServerError, "读取视频位置失败", "Failed to load video location")
+		return
+	}
+	if loc == nil {
+		respondLocalizedError(c, http.StatusNotFound, "视频位置不存在", "Video location does not exist")
+		return
+	}
+
+	javRec, err := dbpkg.LinkVideoLocationsToExistingJav(c.Request.Context(), code, id)
+	if err != nil {
+		logging.Error("link video to existing jav failed video=%d code=%s: %v", id, code, err)
+		respondLocalizedError(c, http.StatusInternalServerError, "关联已有番号失败", "Failed to link existing JAV")
+		return
+	}
+	if javRec == nil {
+		respondLocalizedError(
+			c,
+			http.StatusNotFound,
+			fmt.Sprintf("番号 %s 在 JAV 库中不存在", code),
+			fmt.Sprintf("JAV code %s does not exist in the library", code),
+		)
+		return
+	}
+
+	video, err := dbpkg.GetVideoForLocation(c.Request.Context(), id, loc.ID)
+	if err != nil {
+		logging.Error("existing jav link reload failed video=%d location=%d code=%s: %v", id, loc.ID, code, err)
+		respondLocalizedError(c, http.StatusInternalServerError, "重新加载视频失败", "Failed to reload video")
+		return
+	}
+	if video == nil {
+		respondLocalizedError(c, http.StatusNotFound, "视频不存在", "Video does not exist")
+		return
+	}
+	c.JSON(http.StatusOK, video)
 }
 
 func manualVideoJavScrape(c *gin.Context) {
@@ -809,7 +881,7 @@ func manualVideoJavScrape(c *gin.Context) {
 		return
 	}
 
-	javRec, err := dbpkg.SaveJavInfoAndLinkVideoLocations(c.Request.Context(), info, id)
+	javRec, err := dbpkg.SaveManualJavInfoAndLinkVideoLocations(c.Request.Context(), info, id)
 	if err != nil {
 		logging.Error("manual jav scrape save failed video=%d code=%s: %v", id, info.Code, err)
 		respondLocalizedError(c, http.StatusBadRequest, "保存手动刮削信息失败", "Failed to save manual scrape metadata")
@@ -820,12 +892,6 @@ func manualVideoJavScrape(c *gin.Context) {
 		return
 	}
 
-	manualOverride := models.JavScrapeOverrideManualPrefix + info.Code
-	if _, err := dbpkg.UpdateVideoJavScrapeOverride(c.Request.Context(), id, manualOverride); err != nil {
-		logging.Error("manual jav scrape update override failed video=%d code=%s: %v", id, info.Code, err)
-		respondLocalizedError(c, http.StatusInternalServerError, "保存刮削设置失败", "Failed to save scrape settings")
-		return
-	}
 	video, err := dbpkg.GetVideoForLocation(c.Request.Context(), id, loc.ID)
 	if err != nil {
 		logging.Error("manual jav scrape reload failed video=%d location=%d code=%s: %v", id, loc.ID, info.Code, err)
@@ -877,7 +943,7 @@ func manualScrapeRequestToJavInfo(req videoJavManualScrapeRequest) (*jav.JavInfo
 		Actors:       normalizeTextList(req.Actors),
 		CoverURL:     strings.TrimSpace(req.CoverURL),
 		IsUncensored: req.IsUncensored,
-		Provider:     jav.ProviderJavDB,
+		Provider:     jav.ProviderManualScrape,
 	}
 	return info, nil
 }

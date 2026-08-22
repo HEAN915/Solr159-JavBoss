@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"javboss/internal/common"
@@ -16,19 +17,27 @@ import (
 
 const javUncensoredBackfillDoneConfigKey = "jav_uncensored_backfill_done"
 
-type javMetadataScanFunc func(context.Context) error
+var javSeriesAvmooNoUpdateRounds atomic.Uint32
+
+type periodicScanFunc func(context.Context) error
+type localSeriesScanFunc func(context.Context) (int64, error)
 
 // StartJavMetadataScanner periodically fills missing JAV metadata using the fast providers.
 func StartJavMetadataScanner(ctx context.Context, interval time.Duration) {
-	startJavMetadataScanner(ctx, interval, "jav metadata", ScanJavMetadata)
+	startPeriodicScanner(ctx, interval, "jav metadata", ScanJavMetadata)
 }
 
-// StartSlowJavMetadataScanner periodically fills metadata from slow JAV providers.
-func StartSlowJavMetadataScanner(ctx context.Context, interval time.Duration) {
-	startJavMetadataScanner(ctx, interval, "slow jav metadata", ScanSlowJavMetadata)
+// StartUncensoredJavMetadataScanner periodically fills uncensored metadata through AVSOX.
+func StartUncensoredJavMetadataScanner(ctx context.Context, interval time.Duration) {
+	startPeriodicScanner(ctx, interval, "uncensored jav metadata", ScanUncensoredJavMetadata)
 }
 
-func startJavMetadataScanner(ctx context.Context, interval time.Duration, name string, scan javMetadataScanFunc) {
+// StartJavSeriesMetadataScanner periodically runs the non-uncensored series pipeline.
+func StartJavSeriesMetadataScanner(ctx context.Context, interval time.Duration) {
+	startPeriodicScanner(ctx, interval, "jav series metadata", ScanJavSeriesMetadata)
+}
+
+func startPeriodicScanner(ctx context.Context, interval time.Duration, name string, scan periodicScanFunc) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -45,9 +54,8 @@ func startJavMetadataScanner(ctx context.Context, interval time.Duration, name s
 	}()
 }
 
-// ScanJavMetadata scans JAV rows with missing Chinese metadata. JavDatabase is
-// also queried first for studio and an internal English-series hint, which gates
-// the slower Avmoo localized-series lookup.
+// ScanJavMetadata fills general metadata plus JavDatabase studio and internal
+// English-series hints. Frontend-visible series remain in the dedicated scanner.
 func ScanJavMetadata(ctx context.Context) error {
 	if common.DB == nil {
 		return errors.New("nil db")
@@ -61,14 +69,6 @@ func ScanJavMetadata(ctx context.Context) error {
 	}
 	if err := scanMissingJavStudioAndEnglishSeries(ctx); err != nil {
 		return err
-	}
-
-	updated, err := db.UpdateMissingJavSeriesStudios(ctx)
-	if err != nil {
-		return err
-	}
-	if updated > 0 {
-		logging.Info("updated %d jav series studio ids", updated)
 	}
 	return nil
 }
@@ -130,17 +130,24 @@ func lookupJavDatabaseMetadata(ctx context.Context, item db.JavMetadataScanItem)
 	return info, code, true, nil
 }
 
-// ScanSlowJavMetadata scans JAV rows using providers that are known to be slow or heavily rate limited.
-func ScanSlowJavMetadata(ctx context.Context) error {
-	logging.Info("starting slow jav metadata scan")
+func javFastZhMetadataProviders() []jav.Provider {
+	return []jav.Provider{jav.ProviderJavBus}
+}
 
-	if err := scanMissingUncensoredJavInfoWithAvsox(ctx); err != nil {
+// ScanJavSeriesMetadata normally runs Avmoo. After two consecutive Avmoo rounds
+// without updates, the next round runs JavMenu instead and resets the fallback state.
+func ScanJavSeriesMetadata(ctx context.Context) error {
+	if common.DB == nil {
+		return errors.New("nil db")
+	}
+	if err := scanJavSeriesMetadataProviderRound(
+		ctx,
+		&javSeriesAvmooNoUpdateRounds,
+		scanMissingJavLocalSeriesWithAvmoo,
+		scanMissingJavLocalSeriesWithJavMenu,
+	); err != nil {
 		return err
 	}
-	if err := scanMissingJavLocalSeriesWithAvmoo(ctx); err != nil {
-		return err
-	}
-
 	updated, err := db.UpdateMissingJavSeriesStudios(ctx)
 	if err != nil {
 		return err
@@ -151,8 +158,75 @@ func ScanSlowJavMetadata(ctx context.Context) error {
 	return nil
 }
 
-func javFastZhMetadataProviders() []jav.Provider {
-	return []jav.Provider{jav.ProviderJavBus}
+func scanJavSeriesMetadataProviderRound(
+	ctx context.Context,
+	avmooNoUpdateRounds *atomic.Uint32,
+	avmooScan localSeriesScanFunc,
+	javMenuScan localSeriesScanFunc,
+) error {
+	if avmooNoUpdateRounds == nil || avmooScan == nil || javMenuScan == nil {
+		return errors.New("invalid jav series scanner state")
+	}
+	if avmooNoUpdateRounds.Load() >= 2 {
+		logging.Info("starting javmenu series scan after two avmoo rounds without updates")
+		if _, err := javMenuScan(ctx); err != nil {
+			return err
+		}
+		avmooNoUpdateRounds.Store(0)
+		return nil
+	}
+
+	updated, err := avmooScan(ctx)
+	if err != nil {
+		return err
+	}
+	if updated > 0 {
+		avmooNoUpdateRounds.Store(0)
+	} else {
+		avmooNoUpdateRounds.Add(1)
+	}
+	return nil
+}
+
+func scanMissingJavLocalSeriesWithJavMenu(ctx context.Context) (int64, error) {
+	items, err := db.ListJavsMissingLocalSeries(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var updatedCount int64
+	logging.Info("found %d javs missing local series for javmenu", len(items))
+	shuffleJavMetadataScanItems(items)
+	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return updatedCount, err
+		}
+
+		code := strings.TrimSpace(item.Code)
+		if code == "" {
+			continue
+		}
+		info, err := jav.LookupJavByCode(code, jav.ProviderJavMenu)
+		if err != nil {
+			if !errors.Is(err, jav.ResourceNotFonud) {
+				logging.Error("lookup javmenu series failed id=%d code=%s err=%v", item.ID, code, err)
+			}
+			continue
+		}
+		series := ""
+		if info != nil {
+			series = strings.TrimSpace(info.Series)
+		}
+		if series == "" {
+			continue
+		}
+		if updated, err := db.UpdateJavSeriesIfMissing(ctx, item.ID, series); err != nil {
+			logging.Error("update javmenu local series failed id=%d code=%s err=%v", item.ID, code, err)
+		} else if updated {
+			updatedCount++
+			logging.Info("jav local series updated provider=%s id=%d code=%s series=%s", jav.ProviderJavMenu.String(), item.ID, code, series)
+		}
+	}
+	return updatedCount, nil
 }
 
 func scanMissingJavUncensoredBackfillOnce(ctx context.Context) error {
@@ -171,6 +245,15 @@ func scanMissingJavUncensoredBackfillOnce(ctx context.Context) error {
 	}
 	logging.Info("jav uncensored backfill marked done")
 	return nil
+}
+
+// ScanUncensoredJavMetadata fills missing uncensored metadata through AVSOX.
+func ScanUncensoredJavMetadata(ctx context.Context) error {
+	if common.DB == nil {
+		return errors.New("nil db")
+	}
+	logging.Info("starting uncensored jav metadata scan")
+	return scanMissingUncensoredJavInfoWithAvsox(ctx)
 }
 
 func javUncensoredBackfillDone(ctx context.Context) (bool, error) {
@@ -276,17 +359,18 @@ func scanMissingUncensoredJavInfoWithAvsox(ctx context.Context) error {
 	return nil
 }
 
-func scanMissingJavLocalSeriesWithAvmoo(ctx context.Context) error {
+func scanMissingJavLocalSeriesWithAvmoo(ctx context.Context) (int64, error) {
 	logging.Info("starting scan missing jav local series with avmoo")
 	items, err := db.ListJavsMissingLocalSeriesWithEnglishSeries(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	var updatedCount int64
 	logging.Info("found %d javs missing series", len(items))
 	shuffleJavMetadataScanItems(items)
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
-			return err
+			return updatedCount, err
 		}
 
 		code := strings.TrimSpace(item.Code)
@@ -313,10 +397,11 @@ func scanMissingJavLocalSeriesWithAvmoo(ctx context.Context) error {
 			logging.Error("update jav local series failed id=%d code=%s err=%v", item.ID, code, err)
 			continue
 		} else if updated {
+			updatedCount++
 			logging.Info("jav local series updated id=%d code=%s series=%s", item.ID, code, series)
 		}
 	}
-	return nil
+	return updatedCount, nil
 }
 
 func shuffleJavMetadataScanItems(items []db.JavMetadataScanItem) {

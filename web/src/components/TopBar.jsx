@@ -8,7 +8,12 @@ import FolderRoundedIcon from '@mui/icons-material/FolderRounded'
 import SearchIcon from '@mui/icons-material/Search'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import ShuffleOutlinedIcon from '@mui/icons-material/ShuffleOutlined'
-import { Button, IconButton, Slider } from '@mui/material'
+import { Button, IconButton, Popper, Slider } from '@mui/material'
+import {
+  formatIdolProfileFilterRange,
+  IDOL_PROFILE_FILTER_DEFINITIONS,
+  normalizeIdolProfileFilters,
+} from '@/constants/jav'
 import { zh } from '@/utils/i18n'
 
 const FAVORITE_MENU_RIGHT_SHIFT = 32
@@ -98,6 +103,203 @@ function FavoriteRatingFilter({ enabled, min, max, onEnabledChange, onRangeChang
   )
 }
 
+function IdolProfileFilter({ definition, value, onChange }) {
+  const anchorRef = useRef(null)
+  const closeTimerRef = useRef(null)
+  const draggingRef = useRef(false)
+  const pointerInsideRef = useRef(false)
+  const [open, setOpen] = useState(false)
+  const [draftEnabled, setDraftEnabled] = useState(value.enabled)
+  const [draftRange, setDraftRange] = useState([value.min, value.max])
+  const label = zh(definition.label[0], definition.label[1])
+  const rangeLabel = formatIdolProfileFilterRange(
+    definition,
+    { enabled: draftEnabled, min: draftRange[0], max: draftRange[1] },
+    zh
+  )
+
+  const cancelClose = () => {
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
+    closeTimerRef.current = null
+    setOpen(true)
+  }
+  const scheduleClose = () => {
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null
+      if (draggingRef.current || pointerInsideRef.current) return
+      setOpen(false)
+    }, 0)
+  }
+  const handleMouseEnter = () => {
+    pointerInsideRef.current = true
+    cancelClose()
+  }
+  const handleMouseLeave = () => {
+    pointerInsideRef.current = false
+    scheduleClose()
+  }
+
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
+    },
+    []
+  )
+
+  useEffect(() => {
+    if (draggingRef.current) return
+    setDraftEnabled(value.enabled)
+    setDraftRange([value.min, value.max])
+  }, [value.enabled, value.max, value.min])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && !draggingRef.current) setOpen(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [open])
+
+  return (
+    <div
+      className="idol-profile-filter"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      onFocusCapture={cancelClose}
+      onBlurCapture={scheduleClose}
+    >
+      <button
+        ref={anchorRef}
+        type="button"
+        className={`filter-action-button ${draftEnabled ? 'filter-action-button--active' : ''}`}
+        onClick={cancelClose}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+      >
+        <span className="idol-profile-filter__label">{label}</span>
+        {draftEnabled ? <span className="idol-profile-filter__range">{rangeLabel}</span> : null}
+      </button>
+      <Popper
+        open={open}
+        anchorEl={anchorRef.current}
+        placement="bottom-start"
+        modifiers={[{ name: 'offset', options: { offset: [0, 0] } }]}
+        sx={{ zIndex: 60 }}
+      >
+        <div
+          className="idol-profile-filter__popover-hitbox"
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
+          onFocusCapture={cancelClose}
+          onBlurCapture={scheduleClose}
+        >
+          <div
+            className="idol-profile-filter__popover"
+            role="dialog"
+            aria-label={zh(`${label}筛选`, `${label} filter`)}
+          >
+            <div className="idol-profile-filter__popover-header">
+              <span>{rangeLabel}</span>
+              {draftEnabled ? (
+                <button
+                  type="button"
+                  className="idol-profile-filter__clear"
+                  onClick={() => {
+                    draggingRef.current = false
+                    setDraftEnabled(false)
+                    setDraftRange([definition.min, definition.max])
+                    setOpen(false)
+                    onChange?.(definition.key, {
+                      enabled: false,
+                      min: definition.min,
+                      max: definition.max,
+                    })
+                  }}
+                >
+                  {zh('清除', 'Clear')}
+                </button>
+              ) : null}
+            </div>
+            <Slider
+              value={draftRange}
+              onPointerDown={() => {
+                draggingRef.current = true
+                setDraftEnabled(true)
+              }}
+              onChange={(_, range) => {
+                if (Array.isArray(range)) {
+                  setDraftEnabled(true)
+                  setDraftRange(range)
+                }
+              }}
+              onChangeCommitted={(_, range) => {
+                const wasDragging = draggingRef.current
+                draggingRef.current = false
+                if (Array.isArray(range)) {
+                  setDraftEnabled(true)
+                  setDraftRange(range)
+                  onChange?.(definition.key, {
+                    enabled: true,
+                    min: range[0],
+                    max: range[1],
+                  })
+                }
+                if (wasDragging && !pointerInsideRef.current) scheduleClose()
+              }}
+              min={definition.min}
+              max={definition.max}
+              step={definition.step}
+              disableSwap
+              getAriaLabel={(index) =>
+                index === 0
+                  ? zh(`最低${label}`, `Minimum ${label}`)
+                  : zh(`最高${label}`, `Maximum ${label}`)
+              }
+              sx={{
+                width: '100%',
+                color: draftEnabled ? 'primary.main' : '#94a3b8',
+                p: 0,
+                height: 4,
+                '& .MuiSlider-rail, & .MuiSlider-track': { height: 4 },
+                '& .MuiSlider-thumb': { width: 12, height: 12 },
+                '& .MuiSlider-thumb::after': { width: 20, height: 20 },
+              }}
+            />
+          </div>
+        </div>
+      </Popper>
+    </div>
+  )
+}
+
+function IdolProfileFilters({ filters, onChange, showClear, onClear }) {
+  const normalized = useMemo(() => normalizeIdolProfileFilters(filters), [filters])
+
+  return (
+    <div className="idol-profile-filters" aria-label={zh('女优资料筛选', 'Idol profile filters')}>
+      {IDOL_PROFILE_FILTER_DEFINITIONS.map((definition) => (
+        <IdolProfileFilter
+          key={definition.key}
+          definition={definition}
+          value={normalized[definition.key]}
+          onChange={onChange}
+        />
+      ))}
+      {showClear ? (
+        <button
+          type="button"
+          className="filter-clear-button idol-profile-filters__clear"
+          onClick={onClear}
+        >
+          {zh('清空', 'Clear')}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 export default function TopBar({
   favoriteEntityType = 'idol',
   favoriteGroups = [],
@@ -107,6 +309,7 @@ export default function TopBar({
   favoriteRatingEnabled = false,
   favoriteRatingMin = 0.5,
   favoriteRatingMax = 5,
+  idolProfileFilters = {},
   buildFavoriteGroupUrl,
   filterItems = [],
   hasActiveControlFilter = false,
@@ -118,6 +321,7 @@ export default function TopBar({
   onFavoriteGroupSelect,
   onFavoriteRatingEnabledChange,
   onFavoriteRatingRangeChange,
+  onIdolProfileFilterChange,
   onHome,
   onRandomClick,
   onOpenFavoriteGroups,
@@ -215,6 +419,10 @@ export default function TopBar({
           ? zh('搜索系列名称', 'Search series name')
           : zh('搜索番号或标题', 'Search code or title')
     : zh('搜索文件名', 'Search filename')
+  const showFilterCluster =
+    filterItems.length > 0 ||
+    Boolean(onOpenFilterEditor) ||
+    ((!isJavMode || javTab !== 'idol') && hasActiveControlFilter)
 
   return (
     <header ref={headerRef} className="filter-topbar">
@@ -263,6 +471,15 @@ export default function TopBar({
             />
           ) : null}
 
+          {isJavMode && javTab === 'idol' ? (
+            <IdolProfileFilters
+              filters={idolProfileFilters}
+              onChange={onIdolProfileFilterChange}
+              showClear={hasActiveControlFilter}
+              onClear={onClearFilters}
+            />
+          ) : null}
+
           {onRandomClick ? (
             <button type="button" className="filter-action-button" onClick={onRandomClick}>
               <ShuffleOutlinedIcon fontSize="small" />
@@ -270,36 +487,38 @@ export default function TopBar({
             </button>
           ) : null}
 
-          <div className="filter-topbar__filter-cluster">
-            {filterItems.length > 0 ? (
-              <div
-                className="filter-topbar__conditions"
-                aria-label={zh('当前筛选条件', 'Active filters')}
-              >
-                {filterItems.map((item) => (
-                  <FilterChip key={item.key} label={item.label} onRemove={item.onRemove} />
-                ))}
-              </div>
-            ) : null}
+          {showFilterCluster ? (
+            <div className="filter-topbar__filter-cluster">
+              {filterItems.length > 0 ? (
+                <div
+                  className="filter-topbar__conditions"
+                  aria-label={zh('当前筛选条件', 'Active filters')}
+                >
+                  {filterItems.map((item) => (
+                    <FilterChip key={item.key} label={item.label} onRemove={item.onRemove} />
+                  ))}
+                </div>
+              ) : null}
 
-            {onOpenFilterEditor ? (
-              <button
-                type="button"
-                className="filter-clear-button"
-                onClick={onOpenFilterEditor}
-                title={zh('编辑筛选条件', 'Edit filters')}
-                aria-label={zh('编辑筛选条件', 'Edit filters')}
-              >
-                {zh('编辑', 'Edit')}
-              </button>
-            ) : null}
+              {onOpenFilterEditor ? (
+                <button
+                  type="button"
+                  className="filter-clear-button"
+                  onClick={onOpenFilterEditor}
+                  title={zh('编辑筛选条件', 'Edit filters')}
+                  aria-label={zh('编辑筛选条件', 'Edit filters')}
+                >
+                  {zh('编辑', 'Edit')}
+                </button>
+              ) : null}
 
-            {hasActiveControlFilter || filterItems.length > 0 ? (
-              <button type="button" className="filter-clear-button" onClick={onClearFilters}>
-                {zh('清空', 'Clear')}
-              </button>
-            ) : null}
-          </div>
+              {hasActiveControlFilter || filterItems.length > 0 ? (
+                <button type="button" className="filter-clear-button" onClick={onClearFilters}>
+                  {zh('清空', 'Clear')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="filter-topbar__actions">
             {hasVideoSelection ? (

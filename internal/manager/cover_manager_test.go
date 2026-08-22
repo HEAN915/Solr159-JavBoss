@@ -13,6 +13,18 @@ import (
 	"javboss/internal/jav"
 )
 
+func TestCompactCoverProvidersExcludesNonLookupProviders(t *testing.T) {
+	got := compactCoverProviders([]jav.Provider{
+		jav.ProviderUnknown,
+		jav.ProviderUser,
+		jav.ProviderManualScrape,
+		jav.ProviderJavBus,
+	})
+	if len(got) != 1 || got[0] != jav.ProviderJavBus {
+		t.Fatalf("compact cover providers = %#v, want only JavBus", got)
+	}
+}
+
 func TestSetCoverDownloadHeadersForJavBus(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "https://www.javbus.com/pics/cover/c85j_b.jpg", nil)
 	if err != nil {
@@ -120,20 +132,20 @@ func TestHandleTaskRetriesAfterSmallCover(t *testing.T) {
 	}))
 	defer server.Close()
 
-	originalLookup := lookupCoverURLByCode
+	originalLookup := lookupJavByCode
 	calls := map[jav.Provider]int{}
-	lookupCoverURLByCode = func(code string, provider jav.Provider) (string, error) {
+	lookupJavByCode = func(code string, provider jav.Provider) (*jav.JavInfo, error) {
 		calls[provider]++
 		switch provider {
 		case jav.ProviderJavDatabase:
-			return server.URL + "/small.jpg", nil
+			return &jav.JavInfo{CoverURL: server.URL + "/small.jpg"}, nil
 		case jav.ProviderJavBus:
-			return server.URL + "/valid.jpg", nil
+			return &jav.JavInfo{CoverURL: server.URL + "/valid.jpg"}, nil
 		default:
-			return "", jav.ResourceNotFonud
+			return nil, jav.ResourceNotFonud
 		}
 	}
-	t.Cleanup(func() { lookupCoverURLByCode = originalLookup })
+	t.Cleanup(func() { lookupJavByCode = originalLookup })
 
 	manager := &CoverManager{
 		coverDir:  t.TempDir(),

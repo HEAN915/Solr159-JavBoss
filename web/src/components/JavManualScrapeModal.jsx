@@ -207,7 +207,7 @@ export default function JavManualScrapeModal({
                 {zh('自动填充', 'Autofill')}
               </span>
               {[
-                ['javdb', 'JavDB'],
+                ['avmoo', 'AvMoo'],
                 ['javbus', 'JavBus'],
                 ['avsox', 'AVSOX'],
               ].map(([provider, label]) => (

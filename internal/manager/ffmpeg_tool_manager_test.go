@@ -12,13 +12,56 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
 
+func TestFFmpegDownloadSources(t *testing.T) {
+	if len(ffmpegDownloads) != 4 {
+		t.Fatalf("download source count = %d, want 4", len(ffmpegDownloads))
+	}
+	tests := map[string]struct {
+		version   string
+		urlMarker string
+		gzip      bool
+	}{
+		"windows/amd64": {ffmpegRelease, "shaka-project/static-ffmpeg-binaries/releases/download/n8.1.2-1/", false},
+		"linux/amd64":   {ffmpegRelease, "shaka-project/static-ffmpeg-binaries/releases/download/n8.1.2-1/", false},
+		"darwin/amd64":  {"6.1.1", "eugeneware/ffmpeg-static/releases/download/b6.1.1/", true},
+		"darwin/arm64":  {"6.1.1", "eugeneware/ffmpeg-static/releases/download/b6.1.1/", true},
+	}
+	for platform, want := range tests {
+		download, ok := ffmpegDownloads[platform]
+		if !ok {
+			t.Errorf("missing download source for %s", platform)
+			continue
+		}
+		if download.version != want.version {
+			t.Errorf("%s version = %q, want %q", platform, download.version, want.version)
+		}
+		if !strings.Contains(download.url, want.urlMarker) {
+			t.Errorf("%s download URL = %q, want marker %q", platform, download.url, want.urlMarker)
+		}
+		if strings.HasSuffix(download.url, ".gz") != want.gzip {
+			t.Errorf("%s gzip URL = %t, want %t", platform, strings.HasSuffix(download.url, ".gz"), want.gzip)
+		}
+		for name, checksum := range map[string]string{
+			"download": download.downloadSHA,
+			"binary":   download.binarySHA256,
+		} {
+			if len(checksum) != sha256.Size*2 {
+				t.Errorf("%s %s SHA-256 length = %d, want %d", platform, name, len(checksum), sha256.Size*2)
+			}
+		}
+	}
+}
+
 func TestFFmpegToolManagerDownloadsAndInstalls(t *testing.T) {
-	archive := gzipTestPayload(t, []byte("#!/bin/sh\necho 'ffmpeg version test'\n"))
+	payload := []byte("#!/bin/sh\necho 'ffmpeg version test'\n")
+	archive := gzipTestPayload(t, payload)
 	digest := sha256.Sum256(archive)
+	binaryDigest := sha256.Sum256(payload)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(archive)
@@ -32,6 +75,7 @@ func TestFFmpegToolManagerDownloadsAndInstalls(t *testing.T) {
 		displayPath: "internal/bin/ffmpeg",
 		downloadURL: server.URL,
 		downloadSHA: hex.EncodeToString(digest[:]),
+		binarySHA:   hex.EncodeToString(binaryDigest[:]),
 		httpClient:  server.Client(),
 		resolveFFmpeg: func() (string, error) {
 			return "", errors.New("FFmpeg not found")
@@ -72,10 +116,12 @@ func TestFFmpegToolManagerDownloadsAndInstalls(t *testing.T) {
 	}
 }
 
-func TestFFmpegToolManagerRejectsChecksumMismatch(t *testing.T) {
-	archive := gzipTestPayload(t, []byte("#!/bin/sh\necho 'ffmpeg version test'\n"))
+func TestFFmpegToolManagerDownloadsRawBinary(t *testing.T) {
+	payload := []byte("#!/bin/sh\necho 'ffmpeg version test'\n")
+	digest := sha256.Sum256(payload)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(archive)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(payload)
 	}))
 	defer server.Close()
 
@@ -85,10 +131,53 @@ func TestFFmpegToolManagerRejectsChecksumMismatch(t *testing.T) {
 		targetPath:  targetPath,
 		displayPath: "internal/bin/ffmpeg",
 		downloadURL: server.URL,
-		downloadSHA: "wrong-checksum",
+		downloadSHA: hex.EncodeToString(digest[:]),
+		binarySHA:   hex.EncodeToString(digest[:]),
 		httpClient:  server.Client(),
 		resolveFFmpeg: func() (string, error) {
 			return "", errors.New("FFmpeg not found")
+		},
+	}
+
+	if err := manager.downloadToTarget(); err != nil {
+		t.Fatalf("download raw FFmpeg: %v", err)
+	}
+	got, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read installed FFmpeg: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("installed FFmpeg content = %q, want %q", got, payload)
+	}
+}
+
+func TestFFmpegToolManagerRejectsChecksumMismatch(t *testing.T) {
+	payload := []byte("#!/bin/sh\necho 'ffmpeg version test'\n")
+	archive := gzipTestPayload(t, payload)
+	binaryDigest := sha256.Sum256(payload)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+
+	targetPath := filepath.Join(t.TempDir(), "internal", "bin", "ffmpeg")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("create target directory: %v", err)
+	}
+	oldContent := []byte("old FFmpeg")
+	if err := os.WriteFile(targetPath, oldContent, 0o755); err != nil {
+		t.Fatalf("write old FFmpeg: %v", err)
+	}
+	manager := &FFmpegToolManager{
+		context:     context.Background(),
+		targetPath:  targetPath,
+		displayPath: "internal/bin/ffmpeg",
+		downloadURL: server.URL,
+		downloadSHA: "wrong-checksum",
+		binarySHA:   hex.EncodeToString(binaryDigest[:]),
+		httpClient:  server.Client(),
+		resolveFFmpeg: func() (string, error) {
+			return targetPath, nil
 		},
 	}
 
@@ -102,12 +191,16 @@ func TestFFmpegToolManagerRejectsChecksumMismatch(t *testing.T) {
 	if status.Error == "" {
 		t.Fatal("error is empty after checksum mismatch")
 	}
-	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
-		t.Fatalf("target exists after checksum mismatch: %v", err)
+	gotContent, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read old FFmpeg after checksum mismatch: %v", err)
+	}
+	if !bytes.Equal(gotContent, oldContent) {
+		t.Fatalf("old FFmpeg changed after checksum mismatch: got %q, want %q", gotContent, oldContent)
 	}
 }
 
-func TestInstallFFmpegFileFallsBackToCopyAcrossFilesystems(t *testing.T) {
+func TestInstallFFmpegFileStagesAndAtomicallyReplacesExistingTarget(t *testing.T) {
 	baseDir := t.TempDir()
 	sourcePath := filepath.Join(baseDir, "system-temp", "ffmpeg.exe")
 	targetPath := filepath.Join(baseDir, "project", "data", "tools", "ffmpeg.exe")
@@ -121,12 +214,23 @@ func TestInstallFFmpegFileFallsBackToCopyAcrossFilesystems(t *testing.T) {
 	if err := os.WriteFile(sourcePath, wantContent, 0o755); err != nil {
 		t.Fatalf("write source FFmpeg: %v", err)
 	}
+	oldContent := []byte("old FFmpeg")
+	if err := os.WriteFile(targetPath, oldContent, 0o755); err != nil {
+		t.Fatalf("write old FFmpeg: %v", err)
+	}
 
 	renameCalls := 0
 	renameFile := func(oldPath string, newPath string) error {
 		renameCalls++
-		if renameCalls == 1 {
-			return errors.New("simulated cross-filesystem rename")
+		if filepath.Dir(oldPath) != filepath.Dir(targetPath) {
+			t.Fatalf("staged path directory = %q, want %q", filepath.Dir(oldPath), filepath.Dir(targetPath))
+		}
+		gotOldContent, err := os.ReadFile(targetPath)
+		if err != nil {
+			t.Fatalf("read target before atomic replacement: %v", err)
+		}
+		if !bytes.Equal(gotOldContent, oldContent) {
+			t.Fatalf("target changed before atomic replacement: got %q, want %q", gotOldContent, oldContent)
 		}
 		return os.Rename(oldPath, newPath)
 	}
@@ -141,8 +245,8 @@ func TestInstallFFmpegFileFallsBackToCopyAcrossFilesystems(t *testing.T) {
 	if !bytes.Equal(gotContent, wantContent) {
 		t.Fatalf("installed FFmpeg content = %q, want %q", gotContent, wantContent)
 	}
-	if renameCalls != 2 {
-		t.Fatalf("rename calls = %d, want 2", renameCalls)
+	if renameCalls != 1 {
+		t.Fatalf("rename calls = %d, want 1", renameCalls)
 	}
 	if _, err := os.Stat(sourcePath); err != nil {
 		t.Fatalf("source FFmpeg should remain for caller cleanup: %v", err)
@@ -153,6 +257,68 @@ func TestInstallFFmpegFileFallsBackToCopyAcrossFilesystems(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("staged FFmpeg files were not cleaned up: %v", matches)
+	}
+}
+
+func TestFFmpegToolManagerTreatsManagedChecksumMismatchAsUpgrade(t *testing.T) {
+	oldPayload := []byte("#!/bin/sh\necho 'ffmpeg version old'\n")
+	newPayload := []byte("#!/bin/sh\necho 'ffmpeg version new'\n")
+	newDigest := sha256.Sum256(newPayload)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(newPayload)
+	}))
+	defer server.Close()
+
+	targetPath := filepath.Join(t.TempDir(), "data", "tools", "linux-x86_64", "ffmpeg")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("create target directory: %v", err)
+	}
+	if err := os.WriteFile(targetPath, oldPayload, 0o755); err != nil {
+		t.Fatalf("write old FFmpeg: %v", err)
+	}
+
+	manager := &FFmpegToolManager{
+		context:     context.Background(),
+		targetPath:  targetPath,
+		displayPath: "data/tools/linux-x86_64/ffmpeg",
+		version:     ffmpegRelease,
+		downloadURL: server.URL,
+		downloadSHA: hex.EncodeToString(newDigest[:]),
+		binarySHA:   hex.EncodeToString(newDigest[:]),
+		httpClient:  server.Client(),
+		resolveFFmpeg: func() (string, error) {
+			return targetPath, nil
+		},
+	}
+
+	status := manager.Status()
+	if status.Installed {
+		t.Fatal("installed = true for outdated managed FFmpeg")
+	}
+	if !status.UpgradeAvailable {
+		t.Fatal("upgrade_available = false for outdated managed FFmpeg")
+	}
+
+	started, err := manager.StartDownload()
+	if err != nil {
+		t.Fatalf("start upgrade: %v", err)
+	}
+	if !started {
+		t.Fatal("StartDownload() = false for outdated managed FFmpeg")
+	}
+	status = waitForFFmpegDownload(t, manager)
+	if !status.Installed || status.UpgradeAvailable {
+		t.Fatalf("status after upgrade = %+v", status)
+	}
+	if status.Version != ffmpegRelease {
+		t.Fatalf("version = %q, want %q", status.Version, ffmpegRelease)
+	}
+	gotPayload, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read upgraded FFmpeg: %v", err)
+	}
+	if !bytes.Equal(gotPayload, newPayload) {
+		t.Fatalf("upgraded FFmpeg = %q, want %q", gotPayload, newPayload)
 	}
 }
 

@@ -52,8 +52,8 @@ func TestBuildConfigContentIncludesRequiredDefaults(t *testing.T) {
 	if !strings.Contains(content, "video-align-y=0\n") {
 		t.Fatalf("expected video-align-y=0 in mpv config, got %q", content)
 	}
-	if !strings.Contains(content, "video-margin-ratio-bottom=0.125\n") {
-		t.Fatalf("expected video-margin-ratio-bottom=0.125 in mpv config, got %q", content)
+	if !strings.Contains(content, "video-margin-ratio-bottom=0.105\n") {
+		t.Fatalf("expected video-margin-ratio-bottom=0.105 in mpv config, got %q", content)
 	}
 	if !strings.Contains(content, "watch-later-options-remove=sub-pos,osd-margin-y\n") {
 		t.Fatalf("expected watch-later overrides in mpv config, got %q", content)
@@ -175,7 +175,7 @@ func TestBuildStartupHotkeyHintIncludesDefaultHotkeys(t *testing.T) {
 		"e：截图",
 		"空格：暂停/继续",
 		"ESC：停止播放并最小化",
-		"你可在「全局设置 → MPV播放器 → 基础设置」里关闭此信息显示",
+		"你可在「设置 → 播放器 → MPV播放器」里关闭此信息显示",
 	}
 	for _, line := range expected {
 		if !strings.Contains(content, line) {

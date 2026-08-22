@@ -160,8 +160,8 @@ func main() {
 	streamManager := manager.NewStreamManager(filepath.Join(dataDir, "cache", "streams"))
 	ffmpegToolManager := manager.NewFFmpegToolManager(ctx, baseDir)
 	coverManager := manager.NewCoverManager(cfg.JavCoverDir, []jav.Provider{
-		jav.ProviderJavDatabase,
 		jav.ProviderJavBus,
+		jav.ProviderJavDatabase,
 		jav.ProviderThePornDB,
 		jav.ProviderAvsox,
 	})
@@ -194,7 +194,8 @@ func main() {
 		case <-timer.C:
 			service.StartAutomaticDirectoryScanScheduler(ctx, 30*time.Second)
 			service.StartJavMetadataScanner(ctx, time.Minute)
-			service.StartSlowJavMetadataScanner(ctx, time.Minute)
+			service.StartJavSeriesMetadataScanner(ctx, time.Minute)
+			service.StartUncensoredJavMetadataScanner(ctx, time.Minute)
 			service.StartIdolProfileScanner(ctx, time.Minute)
 		}
 	}()

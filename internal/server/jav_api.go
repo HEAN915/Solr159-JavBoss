@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -177,22 +179,33 @@ func createCatalogJavItem(c *gin.Context) {
 	title := strings.TrimSpace(req.Title)
 	info := &jav.JavInfo{Code: code, Title: title, Provider: jav.ProviderUser}
 	scrapeStatus := "unavailable"
-	// Do the lookup as part of creating the catalog entry.  The previous
-	// implementation relied on a later background scan, which only considers
-	// records with an empty title and therefore made the result unpredictable.
-	if scraped, lookupErr := jav.LookupJavByCode(code, jav.ProviderJavBus); lookupErr == nil && scraped != nil {
-		info = scraped
-		info.Code = code
-		if title != "" {
-			// A title supplied by the user is intentional and must win over a
-			// provider result.
-			info.Title = title
+	// Catalog-only works do not have a video filename to run through the normal
+	// scan pipeline. Try the same current providers exposed by manual scraping
+	// instead of relying only on JavBus, which is frequently blocked.
+	for _, provider := range []jav.Provider{
+		jav.ProviderAvmoo,
+		jav.ProviderJavBus,
+		jav.ProviderAvsox,
+	} {
+		scraped, lookupErr := jav.LookupJavByCode(code, provider)
+		if lookupErr == nil && scraped != nil {
+			info = scraped
+			info.Code = code
+			if title != "" {
+				// A title supplied by the user is intentional and must win over a
+				// provider result.
+				info.Title = title
+			}
+			scrapeStatus = "scraped"
+			break
 		}
-		scrapeStatus = "scraped"
-	} else if errors.Is(lookupErr, jav.ResourceNotFonud) {
-		scrapeStatus = "not_found"
-	} else if lookupErr != nil {
-		logging.Error("catalog JAV lookup failed code=%s: %v", code, lookupErr)
+		if errors.Is(lookupErr, jav.ResourceNotFonud) {
+			scrapeStatus = "not_found"
+			continue
+		}
+		if lookupErr != nil {
+			logging.Error("catalog JAV lookup provider=%s code=%s: %v", provider.String(), code, lookupErr)
+		}
 	}
 	if strings.TrimSpace(info.Title) == "" {
 		info.Title = code
@@ -424,6 +437,26 @@ func getJavJavDBURL(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"url": javdbURL})
 }
 
+func redirectJavAvsox(c *gin.Context) {
+	code := strings.TrimSpace(c.Query("code"))
+	if code == "" {
+		respondLocalizedError(c, http.StatusBadRequest, "番号不能为空", "JAV code is required")
+		return
+	}
+
+	detailURL, err := jav.LookupAvsoxURLByCode(code)
+	if err != nil {
+		if errors.Is(err, jav.ResourceNotFonud) {
+			respondLocalizedError(c, http.StatusNotFound, "未找到对应的 Avsox 详情页", "Avsox detail page was not found")
+			return
+		}
+		logging.Error("lookup avsox redirect code=%s: %v", code, err)
+		respondLocalizedError(c, http.StatusBadGateway, "查询 Avsox 详情页失败", "Failed to look up the Avsox detail page")
+		return
+	}
+	c.Redirect(http.StatusFound, detailURL)
+}
+
 func resolveJavSampleImages(c *gin.Context) {
 	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
 	if err != nil || id <= 0 {
@@ -446,7 +479,12 @@ func resolveJavSampleImages(c *gin.Context) {
 		return
 	}
 
-	images, lookupErr := lookupJavSampleImagesByProvider(item.Code, jav.LookupJavByCode)
+	images, lookupErr := lookupJavSampleImagesByProvider(
+		c.Request.Context(),
+		item.Code,
+		jav.LookupJavByCode,
+		validateJavSampleImageDetailURL,
+	)
 	if len(images) == 0 {
 		if lookupErr != nil {
 			logging.Error("lookup JAV sample images code=%s: %v", item.Code, lookupErr)
@@ -472,14 +510,20 @@ func resolveJavSampleImages(c *gin.Context) {
 }
 
 type javSampleImageLookupFunc func(string, jav.Provider) (*jav.JavInfo, error)
+type javSampleImageURLValidator func(context.Context, string) (bool, error)
 
-func lookupJavSampleImagesByProvider(code string, lookup javSampleImageLookupFunc) (models.JavSampleImages, error) {
+func lookupJavSampleImagesByProvider(
+	ctx context.Context,
+	code string,
+	lookup javSampleImageLookupFunc,
+	validateURL javSampleImageURLValidator,
+) (models.JavSampleImages, error) {
 	if strings.TrimSpace(code) == "" || lookup == nil {
 		return models.JavSampleImages{}, nil
 	}
 
 	var lookupErrors []error
-	for _, provider := range []jav.Provider{jav.ProviderJavMenu, jav.ProviderJavDB} {
+	for _, provider := range []jav.Provider{jav.ProviderJavMenu, jav.ProviderJavBus} {
 		info, err := lookup(code, provider)
 		if err != nil {
 			if !errors.Is(err, jav.ResourceNotFonud) {
@@ -488,11 +532,84 @@ func lookupJavSampleImagesByProvider(code string, lookup javSampleImageLookupFun
 			continue
 		}
 		images := javSampleImagesToModel(info)
-		if len(images) > 0 {
-			return images, nil
+		if len(images) == 0 {
+			continue
 		}
+
+		detailURL := lastJavSampleImageDetailURL(images)
+		if detailURL == "" || validateURL == nil {
+			continue
+		}
+		valid, err := validateURL(ctx, detailURL)
+		if err != nil {
+			lookupErrors = append(lookupErrors, fmt.Errorf("%s sample image validation: %w", provider.String(), err))
+			continue
+		}
+		if !valid {
+			logging.Info("skip invalid JAV sample images provider=%s detail_url=%s", provider.String(), detailURL)
+			continue
+		}
+		return images, nil
 	}
 	return models.JavSampleImages{}, errors.Join(lookupErrors...)
+}
+
+func lastJavSampleImageDetailURL(images models.JavSampleImages) string {
+	for index := len(images) - 1; index >= 0; index-- {
+		if detailURL := strings.TrimSpace(images[index].DetailURL); detailURL != "" {
+			return detailURL
+		}
+	}
+	return ""
+}
+
+func validateJavSampleImageDetailURL(ctx context.Context, detailURL string) (bool, error) {
+	detailURL = strings.TrimSpace(detailURL)
+	parsed, err := url.Parse(detailURL)
+	if err != nil || parsed == nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+	if host := strings.ToLower(parsed.Hostname()); host == "pics.dmm.co.jp" || strings.HasSuffix(host, ".dmm.co.jp") {
+		req.Header.Set("Referer", "https://www.dmm.co.jp/")
+	}
+
+	resp, err := util.DoRequest(req)
+	if err != nil {
+		if errors.Is(err, util.ErrCachedNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("request image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusPartialContent:
+	case http.StatusNotFound, http.StatusGone:
+		return false, nil
+	default:
+		return false, fmt.Errorf("image returned %s", resp.Status)
+	}
+
+	header, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if err != nil {
+		return false, fmt.Errorf("read image header: %w", err)
+	}
+	if len(header) == 0 {
+		return false, nil
+	}
+	detectedType := strings.ToLower(http.DetectContentType(header))
+	if strings.HasPrefix(detectedType, "image/") {
+		return true, nil
+	}
+	declaredType := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	return strings.HasPrefix(declaredType, "image/") && detectedType == "application/octet-stream", nil
 }
 
 func javSampleImagesToModel(info *jav.JavInfo) models.JavSampleImages {
@@ -657,16 +774,18 @@ func assignJavTagsCategory(c *gin.Context) {
 }
 
 type javItemUpdateRequest struct {
-	Title          *string  `json:"title"`
-	CoverURL       *string  `json:"cover_url"`
-	TagIDs         *[]int64 `json:"tag_ids"`
-	IdolIDs        *[]int64 `json:"idol_ids"`
-	StudioID       *int64   `json:"studio_id"`
-	SeriesID       *int64   `json:"series_id"`
-	ReleaseDate    *string  `json:"release_date"`
-	DurationMin    *int     `json:"duration_min"`
-	FavoriteRating *float64 `json:"favorite_rating"`
-	Note           *string  `json:"note"`
+	Title          *string   `json:"title"`
+	CoverURL       *string   `json:"cover_url"`
+	TagIDs         *[]int64  `json:"tag_ids"`
+	IdolIDs        *[]int64  `json:"idol_ids"`
+	IdolNames      *[]string `json:"idol_names"`
+	ScrapedTags    *[]string `json:"scraped_tags"`
+	StudioID       *int64    `json:"studio_id"`
+	SeriesID       *int64    `json:"series_id"`
+	ReleaseDate    *string   `json:"release_date"`
+	DurationMin    *int      `json:"duration_min"`
+	FavoriteRating *float64  `json:"favorite_rating"`
+	Note           *string   `json:"note"`
 }
 
 const maxJavNoteLength = 2000
@@ -722,15 +841,17 @@ func updateJavItem(c *gin.Context) {
 	}
 
 	updated, err := dbpkg.UpdateJav(c.Request.Context(), id, dbpkg.JavUpdateInput{
-		Title:          req.Title,
-		StudioID:       req.StudioID,
-		SeriesID:       req.SeriesID,
-		IdolIDs:        req.IdolIDs,
-		UserTagIDs:     req.TagIDs,
-		ReleaseUnix:    releaseUnix,
-		DurationMin:    req.DurationMin,
-		FavoriteRating: req.FavoriteRating,
-		Note:           req.Note,
+		Title:           req.Title,
+		StudioID:        req.StudioID,
+		SeriesID:        req.SeriesID,
+		IdolIDs:         req.IdolIDs,
+		IdolNames:       req.IdolNames,
+		UserTagIDs:      req.TagIDs,
+		ScrapedTagNames: req.ScrapedTags,
+		ReleaseUnix:     releaseUnix,
+		DurationMin:     req.DurationMin,
+		FavoriteRating:  req.FavoriteRating,
+		Note:            req.Note,
 	}, parseDirectoryIDs(c.Query("directory_ids")))
 	if err != nil {
 		logging.Error("update jav item error: %v", err)

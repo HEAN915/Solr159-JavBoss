@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import inquirer from "inquirer";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -47,27 +48,44 @@ const FF_BINARY_DOWNLOADS = new Map([
   [
     "windows-x86_64",
     {
-      ffprobe: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-win32-x64.gz",
+      ffmpeg: "https://github.com/shaka-project/static-ffmpeg-binaries/releases/download/n8.1.2-1/ffmpeg-win-x64.exe",
+      ffmpegSHA256: "4044b3924c977ad31229d504c5d5b8685f9553124fbaff6e9c99048b42830341",
+      ffprobe: "https://github.com/shaka-project/static-ffmpeg-binaries/releases/download/n8.1.2-1/ffprobe-win-x64.exe",
+      ffprobeSHA256: "fc37ca23d31ee08bb8f7e108edf3822f6ef3efc1a8d306bbe0b779190230710b",
     },
   ],
   [
     "linux-x86_64",
     {
-      ffprobe: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-x64.gz",
+      ffmpeg: "https://github.com/shaka-project/static-ffmpeg-binaries/releases/download/n8.1.2-1/ffmpeg-linux-x64",
+      ffmpegSHA256: "9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee",
+      ffprobe: "https://github.com/shaka-project/static-ffmpeg-binaries/releases/download/n8.1.2-1/ffprobe-linux-x64",
+      ffprobeSHA256: "065d3c56926052a76e884c4e4b51b7d95248da9391ab7effdcca6b94ceab98cf",
     },
   ],
+  // TODO: macOS 暂时保留 FFmpeg/FFprobe 6.1.1。Shaka 8.1.2 构建最低要求
+  // macOS 15，无法兼容目前仍需支持的 macOS 12–14；其他兼容构建又会让发布包
+  // 增大 20 MB 以上。等 macOS 15 已足够老、可作为项目最低支持版本时再升级。
   [
     "macos-x86_64",
     {
       ffmpeg: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz",
+      ffmpegDownloadSHA256: "929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106",
+      ffmpegSHA256: "ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894",
       ffprobe: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-x64.gz",
+      ffprobeDownloadSHA256: "d4da574d6e2e197bd259b47d69cf262df9e312af24ad960444f6d806d3d4c186",
+      ffprobeSHA256: "fa3add0ce901f7241abe0dfc0155d958fc834aca3f8ce61f87cc712ae669c1e0",
     },
   ],
   [
     "macos-arm64",
     {
       ffmpeg: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz",
+      ffmpegDownloadSHA256: "8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa",
+      ffmpegSHA256: "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584",
       ffprobe: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-arm64.gz",
+      ffprobeDownloadSHA256: "d986a8ec7b030899fe66a8a288ed809a3543338705a3ce178cfb85869c5d80be",
+      ffprobeSHA256: "bb2db6f5d8cef919da12fbf592119a987202a8c060a886f3cab091f9cab90b64",
     },
   ],
 ]);
@@ -200,12 +218,44 @@ async function isExecutable(filePath) {
   }
 }
 
+async function sha256File(filePath) {
+  const hash = createHash("sha256");
+  for await (const chunk of fs.createReadStream(filePath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
+}
+
+async function isFfprobeReady(filePath, choice) {
+  const expected = FF_BINARY_DOWNLOADS.get(choice.label)?.ffprobeSHA256;
+  const binaryReady = choice.goos === "windows" ? await exists(filePath) : await isExecutable(filePath);
+  if (!binaryReady) return false;
+  if (!expected) return true;
+  try {
+    return (await sha256File(filePath)) === expected;
+  } catch {
+    return false;
+  }
+}
+
+async function isFfmpegReady(filePath, choice) {
+  const expected = FF_BINARY_DOWNLOADS.get(choice.label)?.ffmpegSHA256;
+  const binaryReady = choice.goos === "windows" ? await exists(filePath) : await isExecutable(filePath);
+  if (!binaryReady) return false;
+  if (!expected) return true;
+  try {
+    return (await sha256File(filePath)) === expected;
+  } catch {
+    return false;
+  }
+}
+
 async function isBundledFfprobeReady(choice) {
-  return exists(binFfprobePath(choice));
+  return isFfprobeReady(binFfprobePath(choice), choice);
 }
 
 async function isBundledFfmpegReady(choice) {
-  return exists(binFfmpegPath(choice));
+  return isFfmpegReady(binFfmpegPath(choice), choice);
 }
 
 async function isBundledMpvReady(choice) {
@@ -310,7 +360,7 @@ async function startBackendDevChild() {
     return null;
   }
 
-  let ffprobeOk = await isExecutable(ffprobePath(current));
+  let ffprobeOk = await isFfprobeReady(ffprobePath(current), current);
   if (!ffprobeOk) {
     if (await isBundledFfprobeReady(current)) {
       const binFfprobe = binFfprobePath(current);
@@ -324,14 +374,14 @@ async function startBackendDevChild() {
   }
   if (!ffprobeOk) {
     console.error(
-      `[dev] internal/bin 缺少 ${current.label} 的 ffprobe，请先选择 “download dependencies” 下载到 bin/${current.label}。`,
+      `[dev] internal/bin 缺少或版本不匹配 ${current.label} 的 ffprobe，请先选择 “download-dependencies” 下载到 bin/${current.label}。`,
     );
     process.exitCode = 1;
     return null;
   }
 
   if (current.goos === "darwin") {
-    let ffmpegOk = await isExecutable(ffmpegPath(current));
+    let ffmpegOk = await isFfmpegReady(ffmpegPath(current), current);
     if (!ffmpegOk) {
       if (await isBundledFfmpegReady(current)) {
         const binFfmpeg = binFfmpegPath(current);
@@ -343,7 +393,7 @@ async function startBackendDevChild() {
     }
     if (!ffmpegOk) {
       console.error(
-        `[dev] internal/bin 缺少 ${current.label} 的 ffmpeg，请先选择 “download dependencies” 下载到 bin/${current.label}。`,
+        `[dev] internal/bin 缺少 ${current.label} 的 ffmpeg，请先选择 “download-dependencies” 下载到 bin/${current.label}。`,
       );
       process.exitCode = 1;
       return null;
@@ -393,11 +443,36 @@ async function copyDir(src, dest) {
   await fsp.cp(src, dest, { recursive: true });
 }
 
+function linuxMpvWrapperContent() {
+  return [
+    "#!/bin/sh",
+    'HERE=$(CDPATH= cd "$(dirname "$0")" && pwd -P)',
+    'LIB="$HERE/lib"',
+    'MPV_LIBRARY_PATH="$LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"',
+    'exec "$LIB/ld-linux-x86-64.so.2" --library-path "$MPV_LIBRARY_PATH" "$HERE/bin/mpv-bin" "$@"',
+    "",
+  ].join("\n");
+}
+
+async function writeLinuxMpvWrapper(baseDir) {
+  const bundledMpv = path.join(baseDir, "bin", "mpv-bin");
+  const bundledLoader = path.join(baseDir, "lib", "ld-linux-x86-64.so.2");
+  if (!(await exists(bundledMpv)) || !(await exists(bundledLoader))) return false;
+
+  const wrapperPath = path.join(baseDir, "mpv");
+  await fsp.writeFile(wrapperPath, linuxMpvWrapperContent());
+  await fsp.chmod(wrapperPath, 0o755);
+  return true;
+}
+
 async function syncBundledMpvToInternal(choice) {
   if (!(await isBundledMpvReady(choice))) return false;
   await fsp.mkdir(INTERNAL_BIN_DIR, { recursive: true });
   await fsp.rm(internalMpvDir(), { recursive: true, force: true });
   await copyDir(binMpvDir(choice), internalMpvDir());
+  if (choice.goos === "linux") {
+    await writeLinuxMpvWrapper(internalMpvDir());
+  }
   if (choice.goos !== "windows") {
     await fsp.chmod(internalMpvPath(choice), 0o755).catch(() => {});
   }
@@ -466,6 +541,9 @@ async function copyBundledFfmpeg(choice, outDir) {
 async function copyBundledMpv(choice, outDir) {
   const destDir = path.join(outDir, "internal", "bin", "mpv");
   await copyDir(binMpvDir(choice), destDir);
+  if (choice.goos === "linux") {
+    await writeLinuxMpvWrapper(destDir);
+  }
   if (choice.goos !== "windows") {
     await fsp.chmod(mpvExecutablePath(destDir, choice), 0o755).catch(() => {});
   }
@@ -531,18 +609,18 @@ async function createZip(outDir, zipPath) {
 }
 
 async function runRelease(choice, version) {
-  const ffprobeOk = await exists(binFfprobePath(choice));
+  const ffprobeOk = await isBundledFfprobeReady(choice);
   if (!ffprobeOk) {
     console.error(
-      `[release] bin/${choice.label} 缺少 ffprobe，请先选择 “download dependencies” 下载。`,
+      `[release] bin/${choice.label} 缺少或版本不匹配 ffprobe，请先选择 “download-dependencies” 下载。`,
     );
     process.exitCode = 1;
     return;
   }
-  const ffmpegOk = choice.goos !== "darwin" || (await exists(binFfmpegPath(choice)));
+  const ffmpegOk = choice.goos !== "darwin" || (await isBundledFfmpegReady(choice));
   if (!ffmpegOk) {
     console.error(
-      `[release] bin/${choice.label} 缺少 ffmpeg，请先选择 “download dependencies” 下载。`,
+      `[release] bin/${choice.label} 缺少 ffmpeg，请先选择 “download-dependencies” 下载。`,
     );
     process.exitCode = 1;
     return;
@@ -551,7 +629,7 @@ async function runRelease(choice, version) {
   const requireBundledMpv = true;
   if (requireBundledMpv && !bundledMpvOk) {
     console.error(
-      `[release] bin/${choice.label} 缺少 mpv，请先选择 “download dependencies” 下载。`,
+      `[release] bin/${choice.label} 缺少 mpv，请先选择 “download-dependencies” 下载。`,
     );
     process.exitCode = 1;
     return;
@@ -594,18 +672,62 @@ async function runRelease(choice, version) {
   console.log(`[release] 完成：${zipPath}`);
 }
 
-function ffprobeUrls(choice) {
-  const linked = FF_BINARY_DOWNLOADS.get(choice.label);
-  return {
-    urls: linked?.ffprobe ? [linked.ffprobe] : [],
-  };
+async function runBrowserExtensionRelease() {
+  const sourceDir = path.join(ROOT_DIR, "browser-extension");
+  const manifestPath = path.join(sourceDir, "manifest.json");
+
+  if (!(await exists(manifestPath))) {
+    throw new Error("[extension release] browser-extension/manifest.json 不存在");
+  }
+  const manifest = JSON.parse(await fsp.readFile(manifestPath, "utf8"));
+  const version = String(manifest.version || "").trim();
+  if (!/^\d+(?:\.\d+){0,3}$/.test(version)) {
+    throw new Error("[extension release] manifest.json 中的版本号无效");
+  }
+
+  const releaseName = `javboss-browser-extension-v${version}`;
+  const outDir = path.join(ROOT_DIR, "release", releaseName);
+  const zipPath = path.join(ROOT_DIR, "release", `${releaseName}.zip`);
+
+  await fsp.rm(outDir, { recursive: true, force: true });
+  await fsp.rm(zipPath, { force: true });
+  await fsp.mkdir(outDir, { recursive: true });
+  console.log(`[extension release] 打包 Chrome 扩展 v${version}`);
+  for (const name of [
+    "manifest.json",
+    "bridge.html",
+    "bridge.js",
+    "service-worker.js",
+    "README.md",
+  ]) {
+    await fsp.copyFile(path.join(sourceDir, name), path.join(outDir, name));
+  }
+  await copyDir(path.join(sourceDir, "content"), path.join(outDir, "content"));
+  console.log("[extension release] 生成 zip");
+  await createZip(outDir, zipPath);
+  console.log(`[extension release] 完成：${zipPath}`);
 }
 
-function ffmpegUrls(choice) {
+function ffprobeSources(choice) {
   const linked = FF_BINARY_DOWNLOADS.get(choice.label);
-  return {
-    urls: linked?.ffmpeg ? [linked.ffmpeg] : [],
-  };
+  if (!linked?.ffprobe) return [];
+  return [
+    {
+      url: linked.ffprobe,
+      sha256: linked.ffprobeDownloadSHA256 || linked.ffprobeSHA256,
+    },
+  ];
+}
+
+function ffmpegSources(choice) {
+  const linked = FF_BINARY_DOWNLOADS.get(choice.label);
+  if (!linked?.ffmpeg) return [];
+  return [
+    {
+      url: linked.ffmpeg,
+      sha256: linked.ffmpegDownloadSHA256 || linked.ffmpegSHA256,
+    },
+  ];
 }
 
 function mpvUrls(choice) {
@@ -630,7 +752,7 @@ function mpvUrls(choice) {
     );
   } else if (choice.goos === "linux" && choice.goarch === "amd64") {
     urls.push(
-      "https://github.com/ivan-hc/MPV-appimage/releases/download/continuous/mpv-Media-Player_0.41.0-3-archimage5.0-x86_64.AppImage",
+      "https://github.com/ivan-hc/MPV-appimage/releases/download/continuous/mpv-Media-Player_0.41.0-4-archimage5.0-x86_64.AppImage",
     );
   } else if (choice.goos === "darwin" && choice.goarch === "amd64") {
     urls.push(
@@ -708,6 +830,7 @@ function downloadFilename(url, fallbackName) {
 
 async function installBinaryFromUrl({
   url,
+  expectedSHA256,
   target,
   binaryName,
   logLabel,
@@ -725,9 +848,19 @@ async function installBinaryFromUrl({
     return false;
   }
 
+  if (expectedSHA256) {
+    const actualSHA256 = await sha256File(archive);
+    if (actualSHA256 !== expectedSHA256) {
+      console.warn(`[${logLabel}] SHA-256 校验失败，拒绝安装`);
+      return false;
+    }
+  }
+
   try {
     if (archive.toLowerCase().endsWith(".gz")) {
       await extractGzipFile(archive, target);
+    } else if (!isArchiveName(archive.toLowerCase())) {
+      await fsp.copyFile(archive, target);
     } else {
       await fsp.rm(extractDir, { recursive: true, force: true });
       await fsp.mkdir(extractDir, { recursive: true });
@@ -978,16 +1111,7 @@ async function installLinuxMpvFromAppImage(archive, choice, tmpBase) {
     });
   }
 
-  const wrapper = [
-    "#!/bin/sh",
-    'HERE=$(CDPATH= cd "$(dirname "$0")" && pwd -P)',
-    'LIB="$HERE/lib"',
-    'export LD_LIBRARY_PATH="$LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"',
-    'exec "$LIB/ld-linux-x86-64.so.2" --library-path "$LD_LIBRARY_PATH" "$HERE/bin/mpv-bin" "$@"',
-    "",
-  ].join("\n");
-  await fsp.writeFile(path.join(installDir, "mpv"), wrapper);
-  await fsp.chmod(path.join(installDir, "mpv"), 0o755);
+  await writeLinuxMpvWrapper(installDir);
 
   await fsp.rm(binMpvDir(choice), { recursive: true, force: true });
   await copyDir(installDir, binMpvDir(choice));
@@ -1048,8 +1172,8 @@ async function downloadFfprobe(choice) {
     return;
   }
 
-  const { urls } = ffprobeUrls(choice);
-  if (!urls.length) {
+  const sources = ffprobeSources(choice);
+  if (!sources.length) {
     throw new Error(`[ffprobe] 未找到下载地址（${choice.label}）`);
   }
 
@@ -1057,10 +1181,12 @@ async function downloadFfprobe(choice) {
   const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), "javboss-ffprobe-"));
   try {
     let installed = false;
-    for (const url of urls) {
+    for (const source of sources) {
+      const { url, sha256 } = source;
       console.log(`[ffprobe] 下载 ${choice.label}：${url}`);
       installed = await installBinaryFromUrl({
         url,
+        expectedSHA256: sha256,
         target: ffprobeTarget,
         binaryName: ffprobeBinName(choice.goos),
         logLabel: "ffprobe",
@@ -1098,8 +1224,8 @@ async function downloadFfmpeg(choice) {
     return;
   }
 
-  const { urls } = ffmpegUrls(choice);
-  if (!urls.length) {
+  const sources = ffmpegSources(choice);
+  if (!sources.length) {
     throw new Error(`[ffmpeg] 未找到下载地址（${choice.label}）`);
   }
 
@@ -1107,10 +1233,12 @@ async function downloadFfmpeg(choice) {
   const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), "javboss-ffmpeg-"));
   try {
     let installed = false;
-    for (const url of urls) {
+    for (const source of sources) {
+      const { url, sha256 } = source;
       console.log(`[ffmpeg] 下载 ${choice.label}：${url}`);
       installed = await installBinaryFromUrl({
         url,
+        expectedSHA256: sha256,
         target: ffmpegTarget,
         binaryName: ffmpegBinName(choice.goos),
         logLabel: "ffmpeg",
@@ -1142,6 +1270,13 @@ async function downloadFfmpeg(choice) {
 
 async function downloadMpv(choice) {
   if (await isBundledMpvReady(choice)) {
+    if (choice.goos === "linux") {
+      await writeLinuxMpvWrapper(binMpvDir(choice));
+      const current = currentPlatformChoice();
+      if (current?.label === choice.label) {
+        await writeLinuxMpvWrapper(internalMpvDir());
+      }
+    }
     console.log(`[mpv] 已存在：${binMpvDir(choice)}`);
     return;
   }
@@ -1365,7 +1500,11 @@ async function main() {
     await handleRelease(arg1, arg2);
     return;
   }
-  if (action === "download") {
+  if (action === "release-browser-extension") {
+    await runBrowserExtensionRelease();
+    return;
+  }
+  if (action === "download-dependencies") {
     await handleDownload(arg1);
     return;
   }
@@ -1378,7 +1517,8 @@ async function main() {
       choices: [
         { name: "dev", value: "dev" },
         { name: "release", value: "release" },
-        { name: "download dependencies", value: "download" },
+        { name: "release-browser-extension", value: "release-browser-extension" },
+        { name: "download-dependencies", value: "download-dependencies" },
       ],
     },
   ]);
@@ -1391,7 +1531,11 @@ async function main() {
     await handleRelease();
     return;
   }
-  if (mainAction === "download") {
+  if (mainAction === "release-browser-extension") {
+    await runBrowserExtensionRelease();
+    return;
+  }
+  if (mainAction === "download-dependencies") {
     await handleDownload();
   }
 }

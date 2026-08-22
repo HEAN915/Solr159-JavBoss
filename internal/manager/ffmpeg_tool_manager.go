@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -22,45 +23,59 @@ import (
 	"javboss/internal/util"
 )
 
-const ffmpegRelease = "6.1.1"
+const ffmpegRelease = "8.1.2"
 
 type ffmpegDownload struct {
-	url    string
-	sha256 string
+	version      string
+	url          string
+	downloadSHA  string
+	binarySHA256 string
 }
 
 var ffmpegDownloads = map[string]ffmpegDownload{
 	"windows/amd64": {
-		url:    "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz",
-		sha256: "8883a3dffbd0a16cf4ef95206ea05283f78908dbfb118f73c83f4951dcc06d77",
+		version:      ffmpegRelease,
+		url:          "https://github.com/shaka-project/static-ffmpeg-binaries/releases/download/n8.1.2-1/ffmpeg-win-x64.exe",
+		downloadSHA:  "4044b3924c977ad31229d504c5d5b8685f9553124fbaff6e9c99048b42830341",
+		binarySHA256: "4044b3924c977ad31229d504c5d5b8685f9553124fbaff6e9c99048b42830341",
 	},
 	"linux/amd64": {
-		url:    "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz",
-		sha256: "bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa",
+		version:      ffmpegRelease,
+		url:          "https://github.com/shaka-project/static-ffmpeg-binaries/releases/download/n8.1.2-1/ffmpeg-linux-x64",
+		downloadSHA:  "9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee",
+		binarySHA256: "9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee",
 	},
+	// TODO: macOS 暂时保留 FFmpeg 6.1.1。Shaka 8.1.2 构建最低要求 macOS 15，
+	// 无法兼容目前仍需支持的 macOS 12–14；其他兼容构建又会让发布包增大 20 MB
+	// 以上。等 macOS 15 已足够老、可作为项目最低支持版本时再升级。
 	"darwin/amd64": {
-		url:    "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz",
-		sha256: "929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106",
+		version:      "6.1.1",
+		url:          "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz",
+		downloadSHA:  "929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106",
+		binarySHA256: "ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894",
 	},
 	"darwin/arm64": {
-		url:    "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz",
-		sha256: "8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa",
+		version:      "6.1.1",
+		url:          "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz",
+		downloadSHA:  "8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa",
+		binarySHA256: "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584",
 	},
 }
 
 // FFmpegToolStatus describes the project-local FFmpeg installation.
 type FFmpegToolStatus struct {
-	Name            string `json:"name"`
-	Version         string `json:"version"`
-	Supported       bool   `json:"supported"`
-	Installed       bool   `json:"installed"`
-	Source          string `json:"source,omitempty"`
-	Downloading     bool   `json:"downloading"`
-	Progress        int    `json:"progress"`
-	DownloadedBytes int64  `json:"downloaded_bytes"`
-	TotalBytes      int64  `json:"total_bytes"`
-	Path            string `json:"path"`
-	Error           string `json:"error,omitempty"`
+	Name             string `json:"name"`
+	Version          string `json:"version"`
+	Supported        bool   `json:"supported"`
+	Installed        bool   `json:"installed"`
+	UpgradeAvailable bool   `json:"upgrade_available"`
+	Source           string `json:"source,omitempty"`
+	Downloading      bool   `json:"downloading"`
+	Progress         int    `json:"progress"`
+	DownloadedBytes  int64  `json:"downloaded_bytes"`
+	TotalBytes       int64  `json:"total_bytes"`
+	Path             string `json:"path"`
+	Error            string `json:"error,omitempty"`
 }
 
 // FFmpegToolManager downloads FFmpeg into the running project's persistent data/tools directory.
@@ -72,8 +87,10 @@ type FFmpegToolManager struct {
 	displayPath string
 	bundledDir  string
 	tempDir     string
+	version     string
 	downloadURL string
 	downloadSHA string
+	binarySHA   string
 	httpClient  *http.Client
 
 	containerMode bool
@@ -93,18 +110,24 @@ func NewFFmpegToolManager(ctx context.Context, baseDir string) *FFmpegToolManage
 	}
 	relativePath := util.FFmpegToolRelativePath()
 	download := ffmpegDownloads[runtime.GOOS+"/"+runtime.GOARCH]
-	return &FFmpegToolManager{
+	manager := &FFmpegToolManager{
 		context:       ctx,
 		targetPath:    filepath.Join(baseDir, relativePath),
 		displayPath:   filepath.ToSlash(relativePath),
 		bundledDir:    filepath.Join(baseDir, "internal", "bin"),
 		tempDir:       os.TempDir(),
+		version:       download.version,
 		downloadURL:   download.url,
-		downloadSHA:   download.sha256,
+		downloadSHA:   download.downloadSHA,
+		binarySHA:     download.binarySHA256,
 		httpClient:    util.NewHTTPClient(0),
 		containerMode: runtimeconfig.ContainerMode(),
 		resolveFFmpeg: util.ResolveFFmpegPath,
 	}
+	if manager.managedFFmpegNeedsUpgrade() {
+		logging.Info("managed FFmpeg at %s does not match release %s and can be upgraded", manager.displayPath, manager.version)
+	}
+	return manager
 }
 
 // Status returns a snapshot of the current installation and download state.
@@ -112,23 +135,24 @@ func (m *FFmpegToolManager) Status() FFmpegToolStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	installed, source := m.detectInstallation()
+	installed, source, upgradeAvailable := m.detectInstallation()
 	version := ""
 	if source == "downloaded" {
-		version = ffmpegRelease
+		version = m.version
 	}
 	return FFmpegToolStatus{
-		Name:            "ffmpeg",
-		Version:         version,
-		Supported:       m.downloadURL != "",
-		Installed:       installed,
-		Source:          source,
-		Downloading:     m.downloading,
-		Progress:        m.progress,
-		DownloadedBytes: m.downloadedBytes,
-		TotalBytes:      m.totalBytes,
-		Path:            m.displayPath,
-		Error:           m.downloadError,
+		Name:             "ffmpeg",
+		Version:          version,
+		Supported:        m.downloadURL != "",
+		Installed:        installed,
+		UpgradeAvailable: upgradeAvailable,
+		Source:           source,
+		Downloading:      m.downloading,
+		Progress:         m.progress,
+		DownloadedBytes:  m.downloadedBytes,
+		TotalBytes:       m.totalBytes,
+		Path:             m.displayPath,
+		Error:            m.downloadError,
 	}
 }
 
@@ -138,7 +162,7 @@ func (m *FFmpegToolManager) StartDownload() (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	installed, _ := m.detectInstallation()
+	installed, _, _ := m.detectInstallation()
 	if m.downloading || installed {
 		return false, nil
 	}
@@ -155,25 +179,42 @@ func (m *FFmpegToolManager) StartDownload() (bool, error) {
 	return true, nil
 }
 
-func (m *FFmpegToolManager) detectInstallation() (bool, string) {
+func (m *FFmpegToolManager) detectInstallation() (bool, string, bool) {
 	if m.resolveFFmpeg != nil {
 		if resolvedPath, err := m.resolveFFmpeg(); err == nil && isUsableFFmpegFile(resolvedPath) {
 			switch {
 			case m.containerMode:
-				return true, "builtin"
+				return true, "builtin", false
 			case sameFilePath(resolvedPath, m.targetPath):
-				return true, "downloaded"
+				if m.managedFFmpegIsCurrent() {
+					return true, "downloaded", false
+				}
+				return false, "", true
 			case pathWithinDirectory(resolvedPath, m.bundledDir):
-				return true, "builtin"
+				return true, "builtin", false
 			default:
-				return true, "system"
+				return true, "system", false
 			}
 		}
 	}
-	if isUsableFFmpegFile(m.targetPath) {
-		return true, "downloaded"
+	if m.managedFFmpegIsCurrent() {
+		return true, "downloaded", false
 	}
-	return false, ""
+	return false, "", m.managedFFmpegNeedsUpgrade()
+}
+
+func (m *FFmpegToolManager) managedFFmpegIsCurrent() bool {
+	if !isUsableFFmpegFile(m.targetPath) {
+		return false
+	}
+	if strings.TrimSpace(m.binarySHA) == "" {
+		return true
+	}
+	return fileMatchesSHA256(m.targetPath, m.binarySHA)
+}
+
+func (m *FFmpegToolManager) managedFFmpegNeedsUpgrade() bool {
+	return isUsableFFmpegFile(m.targetPath) && !m.managedFFmpegIsCurrent()
 }
 
 func (m *FFmpegToolManager) download() {
@@ -197,7 +238,7 @@ func (m *FFmpegToolManager) downloadToTarget() error {
 	if err != nil {
 		return fmt.Errorf("create download request: %w", err)
 	}
-	req.Header.Set("User-Agent", "JavBoss/"+ffmpegRelease)
+	req.Header.Set("User-Agent", "JavBoss/"+m.version)
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
@@ -229,14 +270,29 @@ func (m *FFmpegToolManager) downloadToTarget() error {
 		update: m.updateProgress,
 		hash:   hasher,
 	}
-	gzipReader, err := gzip.NewReader(countedBody)
+	bufferedBody := bufio.NewReader(countedBody)
+	magic, err := bufferedBody.Peek(2)
 	if err != nil {
 		_ = tempFile.Close()
-		return fmt.Errorf("open FFmpeg archive: %w", err)
+		return fmt.Errorf("read FFmpeg download header: %w", err)
 	}
 
-	_, copyErr := io.Copy(tempFile, gzipReader)
-	gzipErr := gzipReader.Close()
+	downloadReader := io.Reader(bufferedBody)
+	var gzipReader *gzip.Reader
+	if magic[0] == 0x1f && magic[1] == 0x8b {
+		gzipReader, err = gzip.NewReader(bufferedBody)
+		if err != nil {
+			_ = tempFile.Close()
+			return fmt.Errorf("open FFmpeg archive: %w", err)
+		}
+		downloadReader = gzipReader
+	}
+
+	_, copyErr := io.Copy(tempFile, downloadReader)
+	var gzipErr error
+	if gzipReader != nil {
+		gzipErr = gzipReader.Close()
+	}
 	closeErr := tempFile.Close()
 	if copyErr != nil {
 		return fmt.Errorf("extract FFmpeg: %w", copyErr)
@@ -248,7 +304,7 @@ func (m *FFmpegToolManager) downloadToTarget() error {
 		return fmt.Errorf("save FFmpeg: %w", closeErr)
 	}
 	if actualSHA := hex.EncodeToString(hasher.Sum(nil)); !strings.EqualFold(actualSHA, m.downloadSHA) {
-		return fmt.Errorf("verify FFmpeg archive checksum: got %s", actualSHA)
+		return fmt.Errorf("verify FFmpeg download checksum: got %s", actualSHA)
 	}
 	if err := os.Chmod(tempPath, 0o755); err != nil {
 		return fmt.Errorf("make FFmpeg executable: %w", err)
@@ -261,7 +317,7 @@ func (m *FFmpegToolManager) downloadToTarget() error {
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("create FFmpeg directory: %w", err)
 	}
-	if isUsableFFmpegFile(m.targetPath) {
+	if m.managedFFmpegIsCurrent() {
 		return nil
 	}
 	if err := installFFmpegFile(tempPath, m.targetPath); err != nil {
@@ -271,7 +327,7 @@ func (m *FFmpegToolManager) downloadToTarget() error {
 }
 
 func installFFmpegFile(sourcePath string, targetPath string) error {
-	return installFFmpegFileWithRename(sourcePath, targetPath, os.Rename)
+	return installFFmpegFileWithRename(sourcePath, targetPath, replaceFileAtomic)
 }
 
 func installFFmpegFileWithRename(
@@ -279,38 +335,14 @@ func installFFmpegFileWithRename(
 	targetPath string,
 	renameFile func(string, string) error,
 ) error {
-	renameErr := renameFile(sourcePath, targetPath)
-	if renameErr == nil {
-		return nil
-	}
-	if isUsableFFmpegFile(targetPath) {
-		return nil
-	}
-
 	stagedPath, err := copyFFmpegToTargetDirectory(sourcePath, targetPath)
 	if err != nil {
-		return fmt.Errorf("copy FFmpeg to target directory after rename failed (%v): %w", renameErr, err)
+		return fmt.Errorf("stage FFmpeg in target directory: %w", err)
 	}
 	defer os.Remove(stagedPath)
 
-	if err := renameFile(stagedPath, targetPath); err == nil {
-		return nil
-	} else if isUsableFFmpegFile(targetPath) {
-		return nil
-	}
-
-	targetInfo, statErr := os.Stat(targetPath)
-	switch {
-	case statErr == nil && !targetInfo.Mode().IsRegular():
-		return fmt.Errorf("replace existing FFmpeg target: target is not a regular file")
-	case statErr != nil && !os.IsNotExist(statErr):
-		return fmt.Errorf("inspect existing FFmpeg target: %w", statErr)
-	}
-	if removeErr := os.Remove(targetPath); removeErr != nil && !os.IsNotExist(removeErr) {
-		return fmt.Errorf("remove unusable FFmpeg target: %w", removeErr)
-	}
 	if err := renameFile(stagedPath, targetPath); err != nil {
-		return fmt.Errorf("move staged FFmpeg into place: %w", err)
+		return fmt.Errorf("atomically replace FFmpeg: %w", err)
 	}
 	return nil
 }
@@ -388,6 +420,20 @@ func (r *downloadProgressReader) Read(p []byte) (int, error) {
 func isUsableFFmpegFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular() && info.Size() > 0
+}
+
+func fileMatchesSHA256(path string, expectedSHA string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(hasher.Sum(nil)), strings.TrimSpace(expectedSHA))
 }
 
 func sameFilePath(left string, right string) bool {

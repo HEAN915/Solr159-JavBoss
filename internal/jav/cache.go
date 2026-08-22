@@ -21,14 +21,14 @@ var lookupJavCacheKeyVersionByProvider = map[Provider]string{
 	ProviderJavBus:      "v5",
 	ProviderJavDatabase: "v4",
 	ProviderJavDB:       "v4",
-	ProviderAvmoo:       "v5",
+	ProviderAvmoo:       "v6",
 	ProviderAvsox:       "v3",
 	ProviderJavMenu:     "v2",
+	ProviderThePornDB:   "v2",
 }
 
-var lookupCoverCacheKeyVersionByProvider = map[Provider]string{
-	ProviderAvmoo: "v2",
-	ProviderAvsox: "v2",
+var lookupActressNameCacheKeyVersionByProvider = map[Provider]string{
+	ProviderMinnanoAV: "v3",
 }
 
 // LookupCache is a persistent key-value store for provider lookup results.
@@ -159,8 +159,8 @@ func lookupCacheKeyVersion(provider Provider, method string) string {
 			return version
 		}
 	}
-	if method == "lookup_cover" {
-		if version, ok := lookupCoverCacheKeyVersionByProvider[provider]; ok {
+	if method == "lookup_actress_name" {
+		if version, ok := lookupActressNameCacheKeyVersionByProvider[provider]; ok {
 			return version
 		}
 	}
@@ -170,7 +170,7 @@ func lookupCacheKeyVersion(provider Provider, method string) string {
 func normalizeLookupCacheInput(method, input string) string {
 	input = strings.TrimSpace(input)
 	switch method {
-	case "lookup_jav", "lookup_cover", "lookup_actress_code":
+	case "lookup_jav", "lookup_actress_code":
 		return strings.ToUpper(input)
 	default:
 		return strings.Join(strings.Fields(input), " ")

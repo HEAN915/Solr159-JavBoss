@@ -8,7 +8,6 @@ import StarRoundedIcon from '@mui/icons-material/StarRounded'
 
 import {
   fetchJavSeriesPreview,
-  fetchJavStudioJavDBURL,
   fetchJavStudioOptions,
   mergeJavStudios,
   updateJavStudio,
@@ -187,6 +186,7 @@ export function StudioCard({
   onOpenEditor,
   buildSeriesUrl,
   directoryIds = [],
+  seriesListModalZIndex = 1500,
 }) {
   const cover = item?.sample_code ? `/jav/${encodeURIComponent(item.sample_code)}/cover` : null
   const name = item?.name || zh('未知片商', 'Unknown studio')
@@ -224,19 +224,22 @@ export function StudioCard({
   const aliases = Array.isArray(item?.aliases)
     ? item.aliases.map((alias) => String(alias || '').trim()).filter(Boolean)
     : []
-  const [javdbURL, setJavdbURL] = useState(String(item?.javdb_url || '').trim())
-  const [javdbOpening, setJavdbOpening] = useState(false)
+  const searchName = String(item?.name || '').trim()
+  const javDBSearchURL = searchName
+    ? `https://javdb.com/search?f=maker&q=${encodeURIComponent(searchName)}`
+    : ''
   const [previewSeries, setPreviewSeries] = useState(null)
   const [seriesHoverAnchorEl, setSeriesHoverAnchorEl] = useState(null)
   const [seriesListOpen, setSeriesListOpen] = useState(false)
   const [visibleSeriesCount, setVisibleSeriesCount] = useState(null)
+  const [forcedFirstRowSeries, setForcedFirstRowSeries] = useState(null)
   const seriesPreviewCacheRef = useRef(new Map())
   const seriesListRef = useRef(null)
   const seriesMeasureRef = useRef(null)
   const closeTimerRef = useRef(null)
   const activeSeriesHoverIdRef = useRef(null)
   const hasReportedSeriesListOpenRef = useRef(false)
-  const canOpenJavDB = Boolean(javdbURL || (Number.isFinite(studioId) && studioId > 0))
+  const canOpenJavDB = Boolean(javDBSearchURL)
   const displayedSeriesItems =
     visibleSeriesCount == null ? seriesItems : seriesItems.slice(0, visibleSeriesCount)
   const hasHiddenSeries = displayedSeriesItems.length < seriesItems.length
@@ -255,38 +258,11 @@ export function StudioCard({
     onSelectStudio?.(item)
   }
 
-  const handleOpenJavDB = async (event) => {
+  const handleOpenJavDB = (event) => {
     event.preventDefault()
     event.stopPropagation()
-    if (!canOpenJavDB || javdbOpening) return
-
-    const popup = window.open('about:blank', '_blank')
-    if (popup) {
-      popup.opener = null
-    }
-
-    try {
-      setJavdbOpening(true)
-      let targetURL = javdbURL
-      if (!targetURL) {
-        targetURL = await fetchJavStudioJavDBURL({ studioId })
-        setJavdbURL(targetURL)
-      }
-      if (!targetURL) {
-        popup?.close()
-        return
-      }
-      if (popup) {
-        popup.location.replace(targetURL)
-      } else {
-        window.open(targetURL, '_blank', 'noopener,noreferrer')
-      }
-    } catch (error) {
-      popup?.close()
-      console.warn('open javdb studio failed', error)
-    } finally {
-      setJavdbOpening(false)
-    }
+    if (!canOpenJavDB) return
+    window.open(javDBSearchURL, '_blank', 'noopener,noreferrer')
   }
 
   const handleOpenFavorites = (event) => {
@@ -405,6 +381,7 @@ export function StudioCard({
     const measureEl = seriesMeasureRef.current
     if (!el || !measureEl) {
       setVisibleSeriesCount(null)
+      setForcedFirstRowSeries(null)
       return undefined
     }
     const updateVisibleCount = () => {
@@ -414,6 +391,7 @@ export function StudioCard({
       const containerWidth = el.getBoundingClientRect().width
       if (!countChip || chips.length === 0 || !moreButton || containerWidth <= 0) {
         setVisibleSeriesCount(0)
+        setForcedFirstRowSeries(null)
         return
       }
 
@@ -427,6 +405,7 @@ export function StudioCard({
         let row = 0
         let rowWidth = 0
         let visibleCount = 0
+        let forcedSeries = null
         const itemWidths = [countWidth, ...chipWidths]
 
         for (let index = 0; index < itemWidths.length; index += 1) {
@@ -435,11 +414,26 @@ export function StudioCard({
             row === 1 && reserveMoreButton
               ? Math.max(0, containerWidth - moreWidth - gap)
               : containerWidth
-          const nextWidth = rowWidth === 0 ? itemWidth : rowWidth + gap + itemWidth
+          const itemGap = rowWidth === 0 ? 0 : gap
+          const nextWidth = rowWidth + itemGap + itemWidth
           if (nextWidth <= rowLimit || rowWidth === 0) {
             rowWidth = nextWidth <= rowLimit ? nextWidth : itemWidth
             if (index > 0) visibleCount += 1
             continue
+          }
+
+          if (row === 0 && index > 0) {
+            const remainingWidth = rowLimit - rowWidth - gap
+            if (remainingWidth >= 32) {
+              forcedSeries = {
+                index: index - 1,
+                width: Math.max(0, remainingWidth - 0.5),
+              }
+              visibleCount += 1
+              row = 1
+              rowWidth = 0
+              continue
+            }
           }
 
           row += 1
@@ -448,38 +442,19 @@ export function StudioCard({
           if (index > 0) visibleCount += 1
         }
 
-        return visibleCount
+        return { visibleCount, forcedSeries }
       }
 
-      const fullWidthCount = measureRows(false)
-      if (fullWidthCount >= seriesItems.length) {
+      const fullLayout = measureRows(false)
+      if (fullLayout.visibleCount >= seriesItems.length) {
         setVisibleSeriesCount(seriesItems.length)
+        setForcedFirstRowSeries(fullLayout.forcedSeries)
         return
       }
 
-      let reservedCount = measureRows(true)
-      while (reservedCount > 0) {
-        let row = 0
-        let rowWidth = 0
-        const itemWidths = [countWidth, ...chipWidths.slice(0, reservedCount)]
-
-        for (let index = 0; index < itemWidths.length; index += 1) {
-          const itemWidth = itemWidths[index]
-          const rowLimit =
-            row === 1 ? Math.max(0, containerWidth - moreWidth - gap) : containerWidth
-          const nextWidth = rowWidth === 0 ? itemWidth : rowWidth + gap + itemWidth
-          if (nextWidth <= rowLimit || rowWidth === 0) {
-            rowWidth = nextWidth <= rowLimit ? nextWidth : itemWidth
-            continue
-          }
-          row += 1
-          rowWidth = itemWidth
-          if (row > 1) break
-        }
-        if (row <= 1) break
-        reservedCount -= 1
-      }
-      setVisibleSeriesCount(reservedCount)
+      const reservedLayout = measureRows(true)
+      setVisibleSeriesCount(reservedLayout.visibleCount)
+      setForcedFirstRowSeries(reservedLayout.forcedSeries)
     }
     updateVisibleCount()
     if (typeof ResizeObserver === 'undefined') {
@@ -502,7 +477,7 @@ export function StudioCard({
   return (
     <a
       href={href || '#'}
-      className="group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg"
+      className="card-hover-scope group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg"
       onClick={handleClick}
       onKeyDown={(e) => {
         if (e.key === ' ') {
@@ -531,10 +506,10 @@ export function StudioCard({
         ) : null}
         <button
           type="button"
-          className={`absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
+          className={`card-hover-focus-visible absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
             favoriteCount > 0
               ? 'bg-amber-400 text-amber-950 hover:bg-amber-300'
-              : 'bg-black/65 text-white opacity-0 hover:bg-black/80 group-focus-within:opacity-100 group-hover:opacity-100'
+              : 'bg-black/65 text-white opacity-0 hover:bg-black/80 group-hover:opacity-100'
           }`}
           title={zh('加入片商收藏夹', 'Add to studio favorite groups')}
           aria-label={zh('加入片商收藏夹', 'Add to studio favorite groups')}
@@ -548,25 +523,20 @@ export function StudioCard({
         </button>
         <button
           type="button"
-          className={`absolute bottom-2 left-2 flex h-7 w-7 items-center justify-center rounded-full text-white opacity-0 shadow-lg shadow-black/60 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 ${
+          className={`card-hover-focus-visible absolute bottom-2 left-2 flex h-7 w-7 items-center justify-center rounded-full text-white opacity-0 shadow-lg shadow-black/60 transition-opacity group-hover:opacity-100 ${
             canOpenJavDB ? 'bg-black/70 hover:bg-black/85' : 'cursor-not-allowed bg-black/30'
           }`}
-          title={zh('在 JavDB 中打开片商详情', 'Open studio profile in JavDB')}
-          aria-label={zh('在 JavDB 中打开片商详情', 'Open studio profile in JavDB')}
-          disabled={!canOpenJavDB || javdbOpening}
+          title={zh('在 JavDB 中搜索片商', 'Search for studio in JavDB')}
+          aria-label={zh('在 JavDB 中搜索片商', 'Search for studio in JavDB')}
+          disabled={!canOpenJavDB}
           onClick={handleOpenJavDB}
         >
-          <img
-            src="/ico/javdb.png"
-            alt="JavDB"
-            className={`h-4 w-4 ${javdbOpening ? 'animate-pulse' : ''}`}
-            loading="lazy"
-          />
+          <img src="/ico/javdb.png" alt="JavDB" className="h-4 w-4" loading="lazy" />
         </button>
         {onOpenEditor ? (
           <button
             type="button"
-            className="absolute bottom-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/60 transition-opacity hover:bg-black/85 group-focus-within:opacity-100 group-hover:opacity-100"
+            className="card-hover-focus-visible absolute bottom-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/60 transition-opacity hover:bg-black/85 group-hover:opacity-100"
             title={zh('编辑片商信息', 'Edit studio info')}
             aria-label={zh('编辑片商信息', 'Edit studio info')}
             onClick={handleOpenEditor}
@@ -647,7 +617,7 @@ export function StudioCard({
                   <span
                     key={series.id}
                     data-series-measure-chip="true"
-                    className="max-w-[7rem] truncate rounded border border-emerald-100 bg-emerald-50 px-1 py-0.5 text-[9px] font-medium leading-3 text-emerald-700"
+                    className="max-w-[5rem] truncate rounded border border-emerald-100 bg-emerald-50 px-1 py-0.5 text-[9px] font-medium leading-3 text-emerald-700"
                   >
                     {seriesName}
                   </span>
@@ -667,14 +637,21 @@ export function StudioCard({
               <span className="rounded bg-emerald-700 px-1 py-0.5 text-[9px] font-semibold leading-3 text-white">
                 {zh(`${seriesItems.length}个系列`, `${seriesItems.length} series`)}
               </span>
-              {displayedSeriesItems.map((series) => {
+              {displayedSeriesItems.map((series, index) => {
                 const seriesName = String(series?.name || '').trim()
+                const forcedWidth =
+                  forcedFirstRowSeries?.index === index ? forcedFirstRowSeries.width : null
                 return (
                   <button
                     type="button"
                     key={series.id}
                     data-series-chip="true"
-                    className="max-w-[7rem] truncate rounded border border-emerald-100 bg-emerald-50 px-1 py-0.5 text-[9px] font-medium leading-3 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100"
+                    className="min-w-0 max-w-[5rem] truncate rounded border border-emerald-100 bg-emerald-50 px-1 py-0.5 text-[9px] font-medium leading-3 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100"
+                    style={
+                      forcedWidth == null
+                        ? undefined
+                        : { width: `${forcedWidth}px`, maxWidth: `${forcedWidth}px` }
+                    }
                     title={seriesName}
                     onClick={(event) => handleSeriesClick(series, event)}
                     onMouseEnter={(event) => handleSeriesHoverStart(series, event)}
@@ -730,16 +707,16 @@ export function StudioCard({
               <AppModal
                 ariaLabel={zh('片商系列', 'Studio series')}
                 className="p-4"
-                contentClassName="max-h-[84vh] w-[min(72rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl"
+                contentClassName="flex max-h-[84vh] w-[min(72rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl"
                 contentProps={{ onClick: (event) => event.stopPropagation() }}
                 onClose={(event) => {
                   event?.preventDefault()
                   event?.stopPropagation()
                   closeSeriesList()
                 }}
-                zIndex={1500}
+                zIndex={seriesListModalZIndex}
               >
-                <div className="sticky top-0 z-10 mb-2 flex items-center justify-between gap-3 border-b border-gray-100 bg-white px-3 py-2">
+                <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-100 bg-white px-3 py-2">
                   <div className="text-xs font-semibold text-gray-700">
                     {zh(
                       `片商：${name}，共${seriesItems.length}个系列`,
@@ -758,22 +735,24 @@ export function StudioCard({
                     {zh('关闭', 'Close')}
                   </button>
                 </div>
-                <div className="grid grid-cols-3 gap-3 p-3 md:grid-cols-4 xl:grid-cols-5">
-                  {seriesItems.map((series) => {
-                    return (
-                      <SeriesCard
-                        key={series.id}
-                        item={series}
-                        href={buildSeriesUrl?.(series)}
-                        onSelectSeries={(selectedSeries) => {
-                          closeSeriesList()
-                          onSelectSeries?.(selectedSeries)
-                        }}
-                        onSelectStudio={(studio) => onSelectStudio?.(studio)}
-                        onOpenFavorites={onOpenSeriesFavorites}
-                      />
-                    )
-                  })}
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <div className="grid grid-cols-3 gap-3 p-3 md:grid-cols-4 xl:grid-cols-5">
+                    {seriesItems.map((series) => {
+                      return (
+                        <SeriesCard
+                          key={series.id}
+                          item={series}
+                          href={buildSeriesUrl?.(series)}
+                          onSelectSeries={(selectedSeries) => {
+                            closeSeriesList()
+                            onSelectSeries?.(selectedSeries)
+                          }}
+                          onSelectStudio={(studio) => onSelectStudio?.(studio)}
+                          onOpenFavorites={onOpenSeriesFavorites}
+                        />
+                      )
+                    })}
+                  </div>
                 </div>
               </AppModal>
             ) : null}

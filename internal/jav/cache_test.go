@@ -110,7 +110,7 @@ func TestLookupCacheKeyVersionIsProviderSpecific(t *testing.T) {
 			provider: ProviderAvmoo,
 			method:   "lookup_jav",
 			input:    "abc-001",
-			want:     "v5:jav:avmoo:lookup_jav:ABC-001",
+			want:     "v6:jav:avmoo:lookup_jav:ABC-001",
 		},
 		{
 			name:     "avsox lookup jav uses provider version",
@@ -127,27 +127,6 @@ func TestLookupCacheKeyVersionIsProviderSpecific(t *testing.T) {
 			want:     "v2:jav:javmenu:lookup_jav:ABC-001",
 		},
 		{
-			name:     "avsox cover uses provider version",
-			provider: ProviderAvsox,
-			method:   "lookup_cover",
-			input:    "030919_047",
-			want:     "v2:jav:avsox:lookup_cover:030919_047",
-		},
-		{
-			name:     "javdatabase cover keeps default version",
-			provider: ProviderJavDatabase,
-			method:   "lookup_cover",
-			input:    "abc-001",
-			want:     "v1:jav:javdatabase:lookup_cover:ABC-001",
-		},
-		{
-			name:     "avmoo cover uses provider version",
-			provider: ProviderAvmoo,
-			method:   "lookup_cover",
-			input:    "abc-001",
-			want:     "v2:jav:avmoo:lookup_cover:ABC-001",
-		},
-		{
 			name:     "javdb actress url uses fallback version",
 			provider: ProviderJavDB,
 			method:   "lookup_actress_url_code_name",
@@ -160,6 +139,13 @@ func TestLookupCacheKeyVersionIsProviderSpecific(t *testing.T) {
 			method:   "lookup_actress_code",
 			input:    "ipx-228",
 			want:     "v2:jav:javdatabase:lookup_actress_code:IPX-228",
+		},
+		{
+			name:     "minnanoav actress name lookup uses qualified result parser version",
+			provider: ProviderMinnanoAV,
+			method:   "lookup_actress_name",
+			input:    "倉沢裕美",
+			want:     "v3:jav:minnanoav:lookup_actress_name:倉沢裕美",
 		},
 	}
 
@@ -201,7 +187,6 @@ func (m *memoryLookupCache) Set(key string, value []byte, expiresAt time.Time) e
 type countingLookupProvider struct {
 	javInfo    *JavInfo
 	actress    *ActressInfo
-	coverURL   string
 	profileURL string
 	seriesURL  string
 	studioURL  string
@@ -220,10 +205,6 @@ func (p *countingLookupProvider) LookupActressByName(string) (*ActressInfo, erro
 
 func (p *countingLookupProvider) LookupActressURLByCodeAndName(string, string) (string, error) {
 	return p.profileURL, p.err
-}
-
-func (p *countingLookupProvider) LookupCoverURLByCode(string) (string, error) {
-	return p.coverURL, p.err
 }
 
 func (p *countingLookupProvider) LookupJavByCode(string) (*JavInfo, error) {

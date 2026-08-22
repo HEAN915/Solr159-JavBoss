@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	"javboss/internal/common/logging"
@@ -35,9 +36,9 @@ func StartIdolProfileScanner(ctx context.Context, interval time.Duration) {
 }
 
 // ScanIdolProfiles scans jav_idol rows that are missing profile fields.
-// For each idol, it tries to find a solo work code to query JavDatabase, also looks up the idol by
-// Japanese/name data in JavModel, merges the returned actress details, normalizes Chinese names,
-// and writes the completed profile fields back to the database.
+// For each idol, it tries to find a solo work code, queries MinnanoAV, JavDatabase, and JavModel
+// concurrently, merges details in that priority order, normalizes Chinese names, and writes the
+// completed profile fields back to the database.
 func ScanIdolProfiles(ctx context.Context) error {
 	idols, err := db.ListIdolsMissingProfile(ctx)
 	if err != nil {
@@ -57,6 +58,7 @@ func ScanIdolProfiles(ctx context.Context) error {
 		}
 		var (
 			javDatabaseInfo *jav.ActressInfo
+			minnanoAVInfo   *jav.ActressInfo
 			javModelInfo    *jav.ActressInfo
 			code            string
 		)
@@ -64,19 +66,39 @@ func ScanIdolProfiles(ctx context.Context) error {
 		if err != nil {
 			logging.Error("find solo code failed idol=%s err=%v", idol.Name, err)
 		}
+
+		var javDatabaseLookup idolActressLookup
 		if code != "" {
-			javDatabaseInfo, err = jav.LookupActressByCode(code, jav.ProviderJavDatabase)
-			if err != nil && !errors.Is(err, jav.ResourceNotFonud) {
-				logging.Error("lookup actress failed idol=%s code=%s err=%v", idol.Name, code, err)
+			javDatabaseLookup = func() (*jav.ActressInfo, error) {
+				return jav.LookupActressByCode(code, jav.ProviderJavDatabase)
 			}
 		}
 
-		javModelInfo, err = jav.LookupActressByJapaneseName(lookupName, jav.ProviderJavModel)
-		if err != nil && !errors.Is(err, jav.ResourceNotFonud) {
-			logging.Error("lookup actress (javmodel) failed idol=%d name=%s err=%v", idol.ID, lookupName, err)
+		var minnanoAVLookup, javModelLookup idolActressLookup
+		if lookupName != "" {
+			minnanoAVLookup = func() (*jav.ActressInfo, error) {
+				return jav.LookupActressByJapaneseName(lookupName, jav.ProviderMinnanoAV)
+			}
+			javModelLookup = func() (*jav.ActressInfo, error) {
+				return jav.LookupActressByJapaneseName(lookupName, jav.ProviderJavModel)
+			}
 		}
 
-		info := mergeActressInfo(javDatabaseInfo, javModelInfo)
+		lookupResults := lookupActressProfilesConcurrently(minnanoAVLookup, javDatabaseLookup, javModelLookup)
+		minnanoAVInfo = lookupResults[0].info
+		javDatabaseInfo = lookupResults[1].info
+		javModelInfo = lookupResults[2].info
+		if lookupErr := lookupResults[0].err; lookupErr != nil && !errors.Is(lookupErr, jav.ResourceNotFonud) {
+			logging.Error("lookup actress (minnanoav) failed idol=%d name=%s err=%v", idol.ID, lookupName, lookupErr)
+		}
+		if lookupErr := lookupResults[1].err; lookupErr != nil && !errors.Is(lookupErr, jav.ResourceNotFonud) {
+			logging.Error("lookup actress (javdatabase) failed idol=%s code=%s err=%v", idol.Name, code, lookupErr)
+		}
+		if lookupErr := lookupResults[2].err; lookupErr != nil && !errors.Is(lookupErr, jav.ResourceNotFonud) {
+			logging.Error("lookup actress (javmodel) failed idol=%d name=%s err=%v", idol.ID, lookupName, lookupErr)
+		}
+
+		info := mergeActressInfosByPriority(minnanoAVInfo, javDatabaseInfo, javModelInfo)
 		if info == nil {
 			continue
 		}
@@ -93,6 +115,38 @@ func ScanIdolProfiles(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+type idolActressLookup func() (*jav.ActressInfo, error)
+
+type idolActressLookupResult struct {
+	info *jav.ActressInfo
+	err  error
+}
+
+func lookupActressProfilesConcurrently(lookups ...idolActressLookup) []idolActressLookupResult {
+	results := make([]idolActressLookupResult, len(lookups))
+	var workers sync.WaitGroup
+	for index, lookup := range lookups {
+		if lookup == nil {
+			continue
+		}
+		workers.Add(1)
+		go func(index int, lookup idolActressLookup) {
+			defer workers.Done()
+			results[index].info, results[index].err = lookup()
+		}(index, lookup)
+	}
+	workers.Wait()
+	return results
+}
+
+func mergeActressInfosByPriority(infos ...*jav.ActressInfo) *jav.ActressInfo {
+	var merged *jav.ActressInfo
+	for _, info := range infos {
+		merged = mergeActressInfo(merged, info)
+	}
+	return merged
 }
 
 func mergeActressInfo(primary, secondary *jav.ActressInfo) *jav.ActressInfo {

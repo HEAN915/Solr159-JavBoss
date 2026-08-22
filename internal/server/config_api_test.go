@@ -167,7 +167,7 @@ func TestUpdateConfigAcceptsBrowserPlayerAndLANAccess(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPatch,
 		"/config",
-		bytes.NewReader([]byte(`{"default_player":"browser","allow_lan_access":true}`)),
+		bytes.NewReader([]byte(`{"default_player":"browser","allow_lan_access":true,"browser_player_show_hotkey_hint":false}`)),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -185,6 +185,138 @@ func TestUpdateConfigAcceptsBrowserPlayerAndLANAccess(t *testing.T) {
 	}
 	if got["allow_lan_access"] != "true" {
 		t.Fatalf("allow_lan_access = %q, want true", got["allow_lan_access"])
+	}
+	if got["browser_player_show_hotkey_hint"] != "false" {
+		t.Fatalf(
+			"browser_player_show_hotkey_hint = %q, want false",
+			got["browser_player_show_hotkey_hint"],
+		)
+	}
+}
+
+func TestIsRemoteRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		want       bool
+	}{
+		{name: "IPv4 loopback", remoteAddr: "127.0.0.1:17654", want: false},
+		{name: "IPv6 loopback", remoteAddr: "[::1]:17654", want: false},
+		{name: "LAN IPv4", remoteAddr: "192.168.1.25:54321", want: true},
+		{name: "LAN IPv6", remoteAddr: "[fd00::25]:54321", want: true},
+		{name: "address without port", remoteAddr: "10.0.0.8", want: true},
+		{name: "unknown address", remoteAddr: "", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isRemoteRequest(test.remoteAddr); got != test.want {
+				t.Fatalf("isRemoteRequest(%q) = %t, want %t", test.remoteAddr, got, test.want)
+			}
+			cfg := map[string]string{}
+			applyRuntimeConfigFields(cfg, test.remoteAddr)
+			wantRuntimeValue := "false"
+			if test.want {
+				wantRuntimeValue = "true"
+			}
+			if got := cfg["runtime_remote_request"]; got != wantRuntimeValue {
+				t.Fatalf("runtime_remote_request = %q, want %q", got, wantRuntimeValue)
+			}
+		})
+	}
+}
+
+func TestUpdateConfigPersistsWebHotkeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	database, err := dbpkg.Open(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("database handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() { common.DB = previousDB })
+
+	router := gin.New()
+	router.PATCH("/config", updateConfig)
+	body := []byte(`{"web_hotkeys":[{"action":"content_page_up","key":"i"},{"action":"content_page_down","key":"k"},{"action":"continuous_scroll_up","key":"Shift+i"},{"action":"continuous_scroll_down","key":"Shift+k"},{"action":"edit_jav_query","key":"Space"},{"action":"open_page_jump","key":"f"},{"action":"previous_page","key":"j"},{"action":"next_page","key":"l"},{"action":"browser_back","key":"u"},{"action":"browser_forward","key":"o"}]}`)
+	req := httptest.NewRequest(http.MethodPatch, "/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update config status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	got, err := dbpkg.ListConfig(context.Background())
+	if err != nil {
+		t.Fatalf("list config: %v", err)
+	}
+	want := `[{"key":"i","action":"content_page_up"},{"key":"k","action":"content_page_down"},{"key":"Shift+i","action":"continuous_scroll_up"},{"key":"Shift+k","action":"continuous_scroll_down"},{"key":"Space","action":"edit_jav_query"},{"key":"f","action":"open_page_jump"},{"key":"j","action":"previous_page"},{"key":"l","action":"next_page"},{"key":"u","action":"browser_back"},{"key":"o","action":"browser_forward"}]`
+	if got["web_hotkeys"] != want {
+		t.Fatalf("web_hotkeys = %q, want %q", got["web_hotkeys"], want)
+	}
+}
+
+func TestUpdateConfigRejectsDuplicateWebHotkeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	database, err := dbpkg.Open(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("database handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() { common.DB = previousDB })
+
+	router := gin.New()
+	router.PATCH("/config", updateConfig)
+	body := []byte(`{"web_hotkeys":[{"action":"content_page_up","key":"w"},{"action":"content_page_down","key":"W"},{"action":"continuous_scroll_up","key":"Shift+w"},{"action":"continuous_scroll_down","key":"Shift+s"},{"action":"edit_jav_query","key":"Space"},{"action":"open_page_jump","key":"f"},{"action":"previous_page","key":"a"},{"action":"next_page","key":"d"},{"action":"browser_back","key":"1"},{"action":"browser_forward","key":"2"}]}`)
+	req := httptest.NewRequest(http.MethodPatch, "/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("update config status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
+
+func TestUpdateConfigRejectsNestedWebHotkeyModifiers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	database, err := dbpkg.Open(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("database handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() { common.DB = previousDB })
+
+	router := gin.New()
+	router.PATCH("/config", updateConfig)
+	for _, key := range []string{"Shift+Control+i", "Shift+Shift+i"} {
+		t.Run(key, func(t *testing.T) {
+			body := []byte(`{"web_hotkeys":[{"action":"content_page_up","key":"i"},{"action":"content_page_down","key":"k"},{"action":"continuous_scroll_up","key":"` + key + `"},{"action":"continuous_scroll_down","key":"Shift+k"},{"action":"edit_jav_query","key":"Space"},{"action":"open_page_jump","key":"f"},{"action":"previous_page","key":"j"},{"action":"next_page","key":"l"},{"action":"browser_back","key":"u"},{"action":"browser_forward","key":"o"}]}`)
+			req := httptest.NewRequest(http.MethodPatch, "/config", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("update config status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+		})
 	}
 }
 

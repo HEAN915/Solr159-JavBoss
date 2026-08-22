@@ -5,7 +5,7 @@ import PhotoCameraRoundedIcon from '@mui/icons-material/PhotoCameraRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import StarBorderRoundedIcon from '@mui/icons-material/StarBorderRounded'
 import StarRoundedIcon from '@mui/icons-material/StarRounded'
-import { fetchJavIdolJavDBURL, fetchJavIdolOptions, mergeJavIdols, updateJavIdol } from '@/api'
+import { fetchJavIdolOptions, mergeJavIdols, updateJavIdol } from '@/api'
 import AppModal from '@/components/AppModal'
 import JavIdolCoverModal, {
   IDOL_COVER_DEFAULT_CROP_LEFT,
@@ -146,18 +146,19 @@ export function IdolCard({
   const [coverImageSize, setCoverImageSize] = useState(null)
   const workCount = item?.work_count || 0
   const favoriteCount = Number(item?.favorite_count) || 0
-  const name = item?.name || zh('未知女优', 'Unknown idol')
   const aliases = Array.isArray(item?.aliases) ? item.aliases : []
   const birthDate = formatBirthDateWithAge(item?.birth_date)
   const height = typeof item?.height_cm === 'number' ? `${item.height_cm}cm` : ''
   const bwh = formatBwh(item)
+  const bwhDisplay = formatBwhDisplay(bwh)
   const cup = formatCup(item?.cup)
-  const lookupCode = coverCode
-  const [javdbURL, setJavdbURL] = useState(String(item?.javdb_url || '').trim())
-  const [javdbOpening, setJavdbOpening] = useState(false)
+  const javDBSearchName = String(item?.japanese_name || item?.name || '').trim()
+  const javDBSearchURL = javDBSearchName
+    ? `https://javdb.com/search?f=actor&q=${encodeURIComponent(javDBSearchName)}`
+    : ''
   const { primaryName, secondaryName } = getIdolDisplayNames(item, preferChineseName)
-  const metaRows = buildMetaRows({ birthDate, height, bwh, cup, aliases })
-  const canOpenJavDB = Boolean(javdbURL || (lookupCode && name))
+  const metaRows = buildMetaRows({ birthDate, height, bwh, bwhDisplay, cup, aliases })
+  const canOpenJavDB = Boolean(javDBSearchURL)
   const hasCoverImageSize =
     coverImageSize?.src === cover &&
     Number.isFinite(coverImageSize.width) &&
@@ -230,38 +231,11 @@ export function IdolCard({
     onSelectIdol?.(item)
   }
 
-  const handleOpenJavDB = async (event) => {
+  const handleOpenJavDB = (event) => {
     event.preventDefault()
     event.stopPropagation()
-    if (!canOpenJavDB || javdbOpening) return
-
-    const popup = window.open('about:blank', '_blank')
-    if (popup) {
-      popup.opener = null
-    }
-
-    try {
-      setJavdbOpening(true)
-      let targetURL = javdbURL
-      if (!targetURL) {
-        targetURL = await fetchJavIdolJavDBURL({ code: lookupCode, name })
-        setJavdbURL(targetURL)
-      }
-      if (!targetURL) {
-        popup?.close()
-        return
-      }
-      if (popup) {
-        popup.location.replace(targetURL)
-      } else {
-        window.open(targetURL, '_blank', 'noopener,noreferrer')
-      }
-    } catch (error) {
-      popup?.close()
-      console.warn('open javdb idol failed', error)
-    } finally {
-      setJavdbOpening(false)
-    }
+    if (!canOpenJavDB) return
+    window.open(javDBSearchURL, '_blank', 'noopener,noreferrer')
   }
 
   const handleOpenFavorites = (event) => {
@@ -285,7 +259,7 @@ export function IdolCard({
   return (
     <a
       href={href || '#'}
-      className="group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg"
+      className="card-hover-scope group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg"
       draggable={false}
       onClick={handleClick}
       onKeyDown={(e) => {
@@ -323,10 +297,10 @@ export function IdolCard({
         )}
         <button
           type="button"
-          className={`absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
+          className={`card-hover-focus-visible absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
             favoriteCount > 0
               ? 'bg-amber-400 text-amber-950 hover:bg-amber-300'
-              : 'bg-black/65 text-white opacity-0 hover:bg-black/80 group-focus-within:opacity-100 group-hover:opacity-100'
+              : 'bg-black/65 text-white opacity-0 hover:bg-black/80 group-hover:opacity-100'
           }`}
           title={zh('加入女优收藏夹', 'Add to idol favorite groups')}
           aria-label={zh('加入女优收藏夹', 'Add to idol favorite groups')}
@@ -340,24 +314,19 @@ export function IdolCard({
         </button>
         <button
           type="button"
-          className={`absolute bottom-2 left-2 flex h-7 w-7 items-center justify-center rounded-full text-white opacity-0 shadow-lg shadow-black/60 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 ${
+          className={`card-hover-focus-visible absolute bottom-2 left-2 flex h-7 w-7 items-center justify-center rounded-full text-white opacity-0 shadow-lg shadow-black/60 transition-opacity group-hover:opacity-100 ${
             canOpenJavDB ? 'bg-black/70 hover:bg-black/85' : 'cursor-not-allowed bg-black/30'
           }`}
-          title={zh('在 JavDB 中打开女优详情', 'Open idol profile in JavDB')}
-          aria-label={zh('在 JavDB 中打开女优详情', 'Open idol profile in JavDB')}
-          disabled={!canOpenJavDB || javdbOpening}
+          title={zh('在 JavDB 中搜索女优', 'Search for idol in JavDB')}
+          aria-label={zh('在 JavDB 中搜索女优', 'Search for idol in JavDB')}
+          disabled={!canOpenJavDB}
           onClick={handleOpenJavDB}
         >
-          <img
-            src="/ico/javdb.png"
-            alt="JavDB"
-            className={`h-4 w-4 ${javdbOpening ? 'animate-pulse' : ''}`}
-            loading="lazy"
-          />
+          <img src="/ico/javdb.png" alt="JavDB" className="h-4 w-4" loading="lazy" />
         </button>
         <button
           type="button"
-          className="absolute bottom-2 right-10 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/60 transition-opacity hover:bg-black/85 group-focus-within:opacity-100 group-hover:opacity-100"
+          className="card-hover-focus-visible absolute bottom-2 right-10 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/60 transition-opacity hover:bg-black/85 group-hover:opacity-100"
           title={zh('编辑女优封面', 'Edit idol cover')}
           aria-label={zh('编辑女优封面', 'Edit idol cover')}
           onClick={handleOpenCoverEditor}
@@ -366,7 +335,7 @@ export function IdolCard({
         </button>
         <button
           type="button"
-          className="absolute bottom-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/60 transition-opacity hover:bg-black/85 group-focus-within:opacity-100 group-hover:opacity-100"
+          className="card-hover-focus-visible absolute bottom-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/60 transition-opacity hover:bg-black/85 group-hover:opacity-100"
           title={zh('编辑女优信息', 'Edit idol info')}
           aria-label={zh('编辑女优信息', 'Edit idol info')}
           onClick={handleOpenEditor}
@@ -403,7 +372,7 @@ export function IdolCard({
                     key={meta.key}
                     className={`inline-flex items-center ${meta.wrap ? 'whitespace-normal break-words' : 'whitespace-nowrap'}`}
                   >
-                    {meta.label}
+                    {meta.content ?? meta.label}
                   </span>
                 ))}
               </div>
@@ -1054,9 +1023,23 @@ function formatBwh(item) {
   const waist = item?.waist
   const hips = item?.hips
   if (typeof bust === 'number' && typeof waist === 'number' && typeof hips === 'number') {
-    return `B${bust}-W${waist}-H${hips}`
+    return zh(`胸${bust}-腰${waist}-臀${hips}`, `B${bust}-W${waist}-H${hips}`)
   }
   return ''
+}
+
+function formatBwhDisplay(value) {
+  if (!value) return ''
+
+  return value.split(/(\d+)/).map((part, index) =>
+    /^\d+$/.test(part) ? (
+      <span key={`${part}-${index}`} className="relative top-[0.5px] inline-block tabular-nums">
+        {part}
+      </span>
+    ) : (
+      part
+    )
+  )
 }
 
 function formatCup(value) {
@@ -1065,7 +1048,7 @@ function formatCup(value) {
   return zh(`${letter}罩杯`, `${letter} cup`)
 }
 
-function buildMetaRows({ birthDate, height, bwh, cup, aliases = [] }) {
+function buildMetaRows({ birthDate, height, bwh, bwhDisplay, cup, aliases = [] }) {
   const rows = []
   const aliasText = joinUniqueDisplayParts(aliases, [], ', ')
   if (aliasText) {
@@ -1090,7 +1073,7 @@ function buildMetaRows({ birthDate, height, bwh, cup, aliases = [] }) {
     rowTwo.push({ key: `height-${height}`, label: height })
   }
   if (bwh) {
-    rowTwo.push({ key: `bwh-${bwh}`, label: bwh })
+    rowTwo.push({ key: `bwh-${bwh}`, label: bwh, content: bwhDisplay })
   }
   if (cup) {
     rowTwo.push({ key: `cup-${cup}`, label: cup })

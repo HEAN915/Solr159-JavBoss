@@ -1,5 +1,12 @@
 import { Popover, Switch } from '@mui/material'
-import { useState } from 'react'
+import FirstPageRoundedIcon from '@mui/icons-material/FirstPageRounded'
+import KeyboardArrowLeftRoundedIcon from '@mui/icons-material/KeyboardArrowLeftRounded'
+import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded'
+import KeyboardDoubleArrowLeftRoundedIcon from '@mui/icons-material/KeyboardDoubleArrowLeftRounded'
+import KeyboardDoubleArrowRightRoundedIcon from '@mui/icons-material/KeyboardDoubleArrowRightRounded'
+import LastPageRoundedIcon from '@mui/icons-material/LastPageRounded'
+import ShortcutRoundedIcon from '@mui/icons-material/ShortcutRounded'
+import { useEffect, useRef, useState } from 'react'
 import { zh } from '@/utils/i18n'
 
 export default function Pagination({
@@ -32,8 +39,10 @@ export default function Pagination({
   const hasNextTen = page < totalPages
   const paginationDisabled = Boolean(waterfallMode)
   const [jumpAnchorEl, setJumpAnchorEl] = useState(null)
-  const jumpColumnCount = Math.min(6, totalPages)
-  const jumpPanelWidth = Math.min(504, Math.max(162, jumpColumnCount * 50.4 + 21.6))
+  const jumpGridRef = useRef(null)
+  const currentJumpPageRef = useRef(null)
+  const jumpColumnCount = Math.min(8, totalPages)
+  const jumpPanelWidth = Math.min(672, Math.max(162, jumpColumnCount * 50.4 + 21.6))
   const normalizedTotalItems = Number(totalItems)
   const totalItemsLabel =
     Number.isFinite(normalizedTotalItems) && normalizedTotalItems >= 0
@@ -45,13 +54,30 @@ export default function Pagination({
   const jumpOptions = []
   for (let p = 1; p <= totalPages; p++) jumpOptions.push(p)
 
-  const openJumpPicker = (event) => {
-    setJumpAnchorEl(event.currentTarget)
+  const toggleJumpPicker = (event) => {
+    const anchor = event.currentTarget
+    setJumpAnchorEl((current) => (current ? null : anchor))
   }
 
   const closeJumpPicker = () => {
     setJumpAnchorEl(null)
   }
+
+  useEffect(() => {
+    if (!jumpAnchorEl) return undefined
+    const frame = window.requestAnimationFrame(() => {
+      const grid = jumpGridRef.current
+      const currentButton = currentJumpPageRef.current
+      if (!grid || !currentButton) return
+      grid.scrollTop = Math.max(
+        0,
+        currentButton.offsetTop -
+          grid.offsetTop -
+          (grid.clientHeight - currentButton.offsetHeight) / 2
+      )
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [jumpAnchorEl, page])
 
   const ignoreClick = (e, enabled = true) => {
     if (paginationDisabled || !enabled) {
@@ -99,7 +125,8 @@ export default function Pagination({
               aria-disabled={paginationDisabled || !hasPrev}
               aria-label={zh('首页', 'First page')}
             >
-              {zh('« 首页', '« First')}
+              <FirstPageRoundedIcon className="pagination-button__icon" aria-hidden="true" />
+              <span>{zh('首页', 'First')}</span>
             </a>
             <a
               href={buildPageUrl ? buildPageUrl({ page: prevTenPage }) : '#'}
@@ -108,13 +135,17 @@ export default function Pagination({
                 e.preventDefault()
                 onGoToPage(prevTenPage)
               }}
-              className={`pagination-button border ${
+              className={`pagination-button pagination-step-button pagination-step-button--back border ${
                 paginationDisabled || !hasPrevTen ? 'pointer-events-none opacity-50' : ''
               }`}
               aria-disabled={paginationDisabled || !hasPrevTen}
               aria-label={zh('上十页', 'Previous 10 pages')}
             >
-              {zh('‹ 上十页', '‹ -10')}
+              <KeyboardDoubleArrowLeftRoundedIcon
+                className="pagination-button__icon"
+                aria-hidden="true"
+              />
+              <span>{zh('上十页', '-10')}</span>
             </a>
             <a
               href={buildPageUrl ? buildPageUrl({ page: page - 1 }) : '#'}
@@ -123,13 +154,17 @@ export default function Pagination({
                 e.preventDefault()
                 onPrev()
               }}
-              className={`pagination-button border ${
+              className={`pagination-button pagination-step-button pagination-step-button--back border ${
                 paginationDisabled || !hasPrev ? 'pointer-events-none opacity-50' : ''
               }`}
               aria-disabled={paginationDisabled || !hasPrev}
               aria-label={zh('上一页', 'Previous page')}
             >
-              {zh('‹ 上一页', '‹ Prev')}
+              <KeyboardArrowLeftRoundedIcon
+                className="pagination-button__icon"
+                aria-hidden="true"
+              />
+              <span>{zh('上一页', 'Prev')}</span>
             </a>
 
             {pages.map((p) => (
@@ -162,13 +197,17 @@ export default function Pagination({
                 e.preventDefault()
                 onNext()
               }}
-              className={`pagination-button border ${
+              className={`pagination-button pagination-step-button pagination-step-button--forward border ${
                 paginationDisabled || !hasNext ? 'pointer-events-none opacity-50' : ''
               }`}
               aria-disabled={paginationDisabled || !hasNext}
               aria-label={zh('下一页', 'Next page')}
             >
-              {zh('下一页 ›', 'Next ›')}
+              <span>{zh('下一页', 'Next')}</span>
+              <KeyboardArrowRightRoundedIcon
+                className="pagination-button__icon"
+                aria-hidden="true"
+              />
             </a>
             <a
               href={buildPageUrl ? buildPageUrl({ page: nextTenPage }) : '#'}
@@ -177,13 +216,17 @@ export default function Pagination({
                 e.preventDefault()
                 onGoToPage(nextTenPage)
               }}
-              className={`pagination-button border ${
+              className={`pagination-button pagination-step-button pagination-step-button--forward border ${
                 paginationDisabled || !hasNextTen ? 'pointer-events-none opacity-50' : ''
               }`}
               aria-disabled={paginationDisabled || !hasNextTen}
               aria-label={zh('下十页', 'Next 10 pages')}
             >
-              {zh('下十页 ›', '+10 ›')}
+              <span>{zh('下十页', '+10')}</span>
+              <KeyboardDoubleArrowRightRoundedIcon
+                className="pagination-button__icon"
+                aria-hidden="true"
+              />
             </a>
             <a
               href={buildPageUrl ? buildPageUrl({ page: lastPage }) : '#'}
@@ -198,11 +241,13 @@ export default function Pagination({
               aria-disabled={paginationDisabled || !hasNext}
               aria-label={zh('末页', 'Last page')}
             >
-              {zh('末页 »', 'Last »')}
+              <span>{zh('末页', 'Last')}</span>
+              <LastPageRoundedIcon className="pagination-button__icon" aria-hidden="true" />
             </a>
             <button
               type="button"
-              onClick={openJumpPicker}
+              data-page-jump-trigger="true"
+              onClick={toggleJumpPicker}
               className={`pagination-button border ${
                 paginationDisabled || !canJump ? 'cursor-not-allowed opacity-50' : 'bg-white'
               }`}
@@ -211,15 +256,17 @@ export default function Pagination({
               aria-expanded={Boolean(jumpAnchorEl)}
               aria-label={zh('跳转到指定页码', 'Jump to page')}
             >
-              {zh('跳转', 'Jump')}
+              <ShortcutRoundedIcon className="pagination-button__icon" aria-hidden="true" />
+              <span>{zh('跳转', 'Jump')}</span>
             </button>
             <Popover
               open={Boolean(jumpAnchorEl)}
               anchorEl={jumpAnchorEl}
               onClose={closeJumpPicker}
               disableScrollLock
-              anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-              transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+              slotProps={{ paper: { className: 'pagination-jump-popover' } }}
+              anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+              transformOrigin={{ vertical: 'top', horizontal: 'center' }}
             >
               <div
                 className="pagination-jump-panel flex flex-col"
@@ -229,12 +276,14 @@ export default function Pagination({
                   {zh('选择页码', 'Select page')}
                 </div>
                 <div
+                  ref={jumpGridRef}
                   className="pagination-jump-grid grid overflow-y-auto"
                   style={{ gridTemplateColumns: `repeat(${jumpColumnCount}, minmax(0, 1fr))` }}
                 >
                   {jumpOptions.map((optionPage) => (
                     <button
                       key={optionPage}
+                      ref={optionPage === page ? currentJumpPageRef : null}
                       type="button"
                       onClick={() => {
                         closeJumpPicker()
@@ -245,6 +294,7 @@ export default function Pagination({
                           ? 'border-blue-600 bg-blue-600 text-white'
                           : 'bg-white hover:border-blue-300 hover:text-blue-600'
                       }`}
+                      aria-current={optionPage === page ? 'page' : undefined}
                     >
                       {optionPage}
                     </button>

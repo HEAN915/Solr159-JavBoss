@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -21,6 +22,19 @@ import (
 const maxPageSize = 500
 const maxJavDisplayRows = 12
 const maxJavSortRules = 50
+
+var validWebHotkeyActions = map[string]struct{}{
+	"content_page_up":        {},
+	"content_page_down":      {},
+	"continuous_scroll_up":   {},
+	"continuous_scroll_down": {},
+	"edit_jav_query":         {},
+	"open_page_jump":         {},
+	"previous_page":          {},
+	"next_page":              {},
+	"browser_back":           {},
+	"browser_forward":        {},
+}
 
 type javSortRule struct {
 	ID      string   `json:"id"`
@@ -53,7 +67,7 @@ func getConfig(c *gin.Context) {
 		respondLocalizedError(c, http.StatusInternalServerError, "加载配置失败", "Failed to load configuration")
 		return
 	}
-	applyRuntimeConfigFields(cfg)
+	applyRuntimeConfigFields(cfg, c.Request.RemoteAddr)
 	c.JSON(http.StatusOK, cfg)
 }
 
@@ -62,6 +76,10 @@ func updateConfig(c *gin.Context) {
 		Key    string  `json:"key"`
 		Action string  `json:"action"`
 		Amount float64 `json:"amount"`
+	}
+	type webHotkeyPayload struct {
+		Key    string `json:"key"`
+		Action string `json:"action"`
 	}
 
 	var req struct {
@@ -103,7 +121,9 @@ func updateConfig(c *gin.Context) {
 		PlayerReuseWindow      *bool                 `json:"player_reuse_window"`
 		PlayerResumePlayback   *bool                 `json:"player_resume_playback"`
 		PlayerShowHotkeyHint   *bool                 `json:"player_show_hotkey_hint"`
+		BrowserShowHotkeyHint  *bool                 `json:"browser_player_show_hotkey_hint"`
 		PlayerHotkeys          []playerHotkeyPayload `json:"player_hotkeys"`
+		WebHotkeys             []webHotkeyPayload    `json:"web_hotkeys"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondLocalizedError(c, http.StatusBadRequest, "配置请求无效", "Invalid configuration request")
@@ -345,6 +365,9 @@ func updateConfig(c *gin.Context) {
 	if req.PlayerShowHotkeyHint != nil {
 		entries["player_show_hotkey_hint"] = strconv.FormatBool(*req.PlayerShowHotkeyHint)
 	}
+	if req.BrowserShowHotkeyHint != nil {
+		entries["browser_player_show_hotkey_hint"] = strconv.FormatBool(*req.BrowserShowHotkeyHint)
+	}
 	if req.PlayerHotkeys != nil {
 		clean := make([]playerHotkeyPayload, 0, len(req.PlayerHotkeys))
 		seen := make(map[string]struct{}, len(req.PlayerHotkeys))
@@ -392,6 +415,70 @@ func updateConfig(c *gin.Context) {
 		}
 		entries["player_hotkeys"] = string(raw)
 	}
+	if req.WebHotkeys != nil {
+		if len(req.WebHotkeys) != len(validWebHotkeyActions) {
+			respondLocalizedError(c, http.StatusBadRequest, "网页快捷键配置不完整", "Incomplete web shortcut configuration")
+			return
+		}
+		clean := make([]webHotkeyPayload, 0, len(req.WebHotkeys))
+		seenActions := make(map[string]struct{}, len(req.WebHotkeys))
+		seenKeys := make(map[string]struct{}, len(req.WebHotkeys))
+		for _, item := range req.WebHotkeys {
+			action := strings.ToLower(strings.TrimSpace(item.Action))
+			if _, ok := validWebHotkeyActions[action]; !ok {
+				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键动作无效", "Invalid web shortcut action")
+				return
+			}
+			if _, ok := seenActions[action]; ok {
+				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键动作重复", "Duplicate web shortcut actions")
+				return
+			}
+
+			key := strings.TrimSpace(item.Key)
+			if utf8.RuneCountInString(key) > 32 {
+				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键按键无效", "Invalid web shortcut key")
+				return
+			}
+			shifted := false
+			if strings.HasPrefix(strings.ToLower(key), "shift+") {
+				shifted = true
+				key = strings.TrimSpace(key[len("shift+"):])
+			}
+			if strings.Contains(key, "+") && key != "+" {
+				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键组合无效", "Invalid web shortcut combination")
+				return
+			}
+			if utf8.RuneCountInString(key) == 1 {
+				key = strings.ToLower(key)
+			}
+			if key == "" {
+				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键按键无效", "Invalid web shortcut key")
+				return
+			}
+			switch strings.ToLower(key) {
+			case "alt", "control", "meta", "shift", "escape", "tab":
+				respondLocalizedError(c, http.StatusBadRequest, "该按键不能用作网页快捷键", "That key cannot be used as a web shortcut")
+				return
+			}
+			if shifted {
+				key = "Shift+" + key
+			}
+			keyID := strings.ToLower(key)
+			if _, ok := seenKeys[keyID]; ok {
+				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键重复", "Duplicate web shortcuts")
+				return
+			}
+			seenActions[action] = struct{}{}
+			seenKeys[keyID] = struct{}{}
+			clean = append(clean, webHotkeyPayload{Key: key, Action: action})
+		}
+		raw, err := json.Marshal(clean)
+		if err != nil {
+			respondLocalizedError(c, http.StatusInternalServerError, "保存网页快捷键失败", "Failed to save web shortcuts")
+			return
+		}
+		entries["web_hotkeys"] = string(raw)
+	}
 
 	if err := dbpkg.UpsertConfig(c.Request.Context(), entries); err != nil {
 		logging.Error("update config error: %v", err)
@@ -435,17 +522,30 @@ func updateConfig(c *gin.Context) {
 		return
 	}
 	util.SetProxyFromStrings(cfg["proxy_host"], cfg["proxy_port"])
-	applyRuntimeConfigFields(cfg)
+	applyRuntimeConfigFields(cfg, c.Request.RemoteAddr)
 	c.JSON(http.StatusOK, cfg)
 }
 
-func applyRuntimeConfigFields(cfg map[string]string) {
+func applyRuntimeConfigFields(cfg map[string]string, remoteAddr string) {
+	remoteRequest := isRemoteRequest(remoteAddr)
 	cfg["runtime_container"] = strconv.FormatBool(runtimeconfig.ContainerMode())
+	cfg["runtime_remote_request"] = strconv.FormatBool(remoteRequest)
 	cfg["directory_picker_enabled"] = strconv.FormatBool(!runtimeconfig.DisableDirectoryPicker())
 	cfg["desktop_integration_enabled"] = strconv.FormatBool(!runtimeconfig.DisableDesktopIntegration())
 	cfg["mpv_enabled"] = strconv.FormatBool(!runtimeconfig.DisableMPVPlayback())
-	cfg["browser_playback_only"] = strconv.FormatBool(runtimeconfig.DisableMPVPlayback() && runtimeconfig.DisableDesktopIntegration())
+	browserPlaybackOnly := runtimeconfig.DisableMPVPlayback() && runtimeconfig.DisableDesktopIntegration()
+	cfg["browser_playback_only"] = strconv.FormatBool(browserPlaybackOnly || remoteRequest)
 	cfg["host_path_prefix_enabled"] = strconv.FormatBool(runtimeconfig.HostPathPrefixEnabled())
+}
+
+func isRemoteRequest(remoteAddr string) bool {
+	host := strings.TrimSpace(remoteAddr)
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	return ip != nil && !ip.IsLoopback()
 }
 
 func normalizeProxyHost(host string) (string, bool) {

@@ -7,7 +7,12 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import FolderOpenIcon from '@mui/icons-material/FolderOpen'
 import ManageSearchIcon from '@mui/icons-material/ManageSearch'
 import { revealVideoLocation } from '@/api'
-import { formatBytes, getVideoDisplayName, parseVideoFingerprint } from '@/utils/display'
+import {
+  buildVideoFullPath,
+  formatBytes,
+  getVideoDisplayName,
+  parseVideoFingerprint,
+} from '@/utils/display'
 import { zh } from '@/utils/i18n'
 import PhotoLibraryOutlinedIcon from '@mui/icons-material/PhotoLibraryOutlined'
 import { MovieEdit } from '@mui/icons-material'
@@ -44,6 +49,7 @@ export default function VideoCard({
   const sizeText = formatBytes(meta.size || video?.size)
   const directoryPath = video?.directory?.path || video?.directory_path || ''
   const videoPath = video?.path || ''
+  const fullPath = buildVideoFullPath(video)
   const canOpen = Boolean(directoryPath && videoPath)
   const inputId = `check-${video?.location_id || video.id}`
   const javCode = String(video?.jav?.code || video?.locations?.[0]?.jav?.code || '').trim()
@@ -112,7 +118,7 @@ export default function VideoCard({
 
   return (
     <div
-      className={`video-card group relative overflow-hidden rounded-xl border bg-white shadow transition-all ${
+      className={`card-hover-scope video-card group relative overflow-hidden rounded-xl border bg-white shadow transition-all ${
         checked ? 'border-sky-400 ring-2 ring-sky-200' : 'border-gray-200 hover:border-gray-300'
       }`}
     >
@@ -153,7 +159,7 @@ export default function VideoCard({
             {zh(`已刮削 ${javCode}`, `Scraped ${javCode}`)}
           </div>
         ) : null}
-        <div className="absolute bottom-2 left-2 z-10 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="card-hover-focus-visible absolute bottom-2 left-2 z-10 opacity-0 transition-opacity group-hover:opacity-100">
           <button
             type="button"
             onClick={handleOpenScreenshots}
@@ -237,7 +243,13 @@ export default function VideoCard({
             </Tooltip>
           ) : null}
           {canRevealFile ? (
-            <Tooltip title={zh('打开所在位置', 'Reveal in folder')}>
+            <Tooltip
+              title={
+                <span className="whitespace-normal break-all">
+                  {zh(`打开所在位置：${fullPath}`, `Reveal in folder: ${fullPath}`)}
+                </span>
+              }
+            >
               <IconButton
                 size="small"
                 onClick={handleRevealFile}
@@ -299,7 +311,7 @@ export default function VideoCard({
         </div>
       </div>
 
-      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 text-white opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="card-hover-focus-visible pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 text-white opacity-0 transition-opacity group-hover:opacity-100">
         <button
           onClick={(e) => {
             e.stopPropagation()

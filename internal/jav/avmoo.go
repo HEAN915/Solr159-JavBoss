@@ -149,27 +149,6 @@ func (avmoo) LookupActressURLByCodeAndName(code, name string) (string, error) {
 	return "", errors.New("avmoo: lookup actress url not supported")
 }
 
-// LookupCoverURLByCode resolves a cover image URL for a movie code.
-func (avmoo) LookupCoverURLByCode(code string) (string, error) {
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return "", ResourceNotFonud
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), avmooLookupTimeout)
-	defer cancel()
-
-	movie, err := fetchAvmooMovieByCode(ctx, code)
-	if err != nil {
-		return "", err
-	}
-	coverURL := firstNonEmpty(movie.PosterLarge, movie.PosterSmall)
-	if coverURL == "" {
-		return "", ResourceNotFonud
-	}
-	return coverURL, nil
-}
-
 // LookupSeriesURLByCode implements lookupProvider.
 func (avmoo) LookupSeriesURLByCode(code string) (string, error) {
 	return "", errors.New("avmoo: lookup series url not supported")
@@ -471,6 +450,7 @@ func avmooMovieInfoFromAPI(movie *avmooAPIMovie) *JavInfo {
 	if movie == nil {
 		return nil
 	}
+	isUncensored := false
 	info := &JavInfo{
 		Title:       firstNonEmpty(movie.Title, movie.TitleTW, movie.TitleCN, movie.TitleJA, movie.TitleEN),
 		Code:        strings.TrimSpace(movie.MovieFanHao),
@@ -482,7 +462,8 @@ func avmooMovieInfoFromAPI(movie *avmooAPIMovie) *JavInfo {
 			movie.SampleLarge,
 			avmooBaseURL,
 		),
-		Provider: ProviderAvmoo,
+		IsUncensored: &isUncensored,
+		Provider:     ProviderAvmoo,
 	}
 	if movie.Series != nil {
 		info.Series = firstNonEmpty(movie.Series.SeriesName, movie.Series.SeriesNameTW, movie.Series.SeriesNameCN, movie.Series.SeriesNameJA, movie.Series.SeriesNameEN)
@@ -687,6 +668,7 @@ func parseAvmooMovieInfo(root *html.Node) *JavInfo {
 		title = cleanAvmooMoviePageTitle(strings.TrimSpace(firstTextByTag(root, "title")))
 	}
 
+	isUncensored := false
 	info := &JavInfo{
 		Title:        title,
 		Code:         strings.TrimSpace(fields.Code),
@@ -697,6 +679,7 @@ func parseAvmooMovieInfo(root *html.Node) *JavInfo {
 		Actors:       dedupeNonEmpty(fields.Actors),
 		CoverURL:     parseAvmooCoverURL(root, ""),
 		SampleImages: parseSampleImages(root, ""),
+		IsUncensored: &isUncensored,
 		Provider:     ProviderAvmoo,
 	}
 	if info.Title == "" && info.Code == "" && info.Series == "" && info.ReleaseUnix == 0 && info.DurationMin == 0 && len(info.Tags) == 0 && len(info.Actors) == 0 {

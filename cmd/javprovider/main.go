@@ -60,6 +60,10 @@ func main() {
 			name:     "theporndb",
 			provider: jav.ProviderThePornDB,
 		},
+		{
+			name:     "minnanoav",
+			provider: jav.ProviderMinnanoAV,
+		},
 	}
 	methods := []methodOption{
 		{
@@ -74,13 +78,6 @@ func main() {
 			prompt: "请输入女优日文名",
 			call: func(provider jav.Provider, input string) (any, error) {
 				return jav.LookupActressByJapaneseName(input, provider)
-			},
-		},
-		{
-			name:   "LookupCoverURLByCode",
-			prompt: "请输入番号",
-			call: func(provider jav.Provider, input string) (any, error) {
-				return jav.LookupCoverURLByCode(input, provider)
 			},
 		},
 		{

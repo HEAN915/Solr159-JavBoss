@@ -22,6 +22,8 @@ const (
 	ProviderJavModel
 	ProviderAvsox
 	ProviderJavMenu
+	ProviderMinnanoAV
+	ProviderManualScrape
 )
 
 func (p Provider) String() string {
@@ -44,6 +46,10 @@ func (p Provider) String() string {
 		return "avsox"
 	case ProviderJavMenu:
 		return "javmenu"
+	case ProviderMinnanoAV:
+		return "minnanoav"
+	case ProviderManualScrape:
+		return "manual_scrape"
 	default:
 		return "unknown"
 	}
@@ -53,7 +59,7 @@ func (p Provider) String() string {
 func ParseProvider(value int) Provider {
 	p := Provider(value)
 	switch p {
-	case ProviderJavBus, ProviderJavDatabase, ProviderUser, ProviderJavDB, ProviderAvmoo, ProviderThePornDB, ProviderJavModel, ProviderAvsox, ProviderJavMenu:
+	case ProviderJavBus, ProviderJavDatabase, ProviderUser, ProviderJavDB, ProviderAvmoo, ProviderThePornDB, ProviderJavModel, ProviderAvsox, ProviderJavMenu, ProviderMinnanoAV, ProviderManualScrape:
 		return p
 	default:
 		return ProviderUnknown
@@ -71,6 +77,7 @@ var lookupProvidersByProvider = map[Provider]lookupProvider{
 	ProviderJavModel:    javModelProvider,
 	ProviderAvsox:       avsoxProvider,
 	ProviderJavMenu:     javMenuProvider,
+	ProviderMinnanoAV:   minnanoAVProvider,
 }
 
 // JavInfo holds basic metadata extracted from a JAV metadata provider.
@@ -110,7 +117,6 @@ type lookupProvider interface {
 	LookupActressByCode(code string) (*ActressInfo, error)
 	LookupActressByName(name string) (*ActressInfo, error)
 	LookupActressURLByCodeAndName(code, name string) (string, error)
-	LookupCoverURLByCode(code string) (string, error)
 	LookupJavByCode(code string) (*JavInfo, error)
 	LookupSeriesURLByCode(code string) (string, error)
 	LookupStudioURLByCode(code string) (string, error)
@@ -118,7 +124,7 @@ type lookupProvider interface {
 
 func lookupProviderFor(provider Provider) (lookupProvider, error) {
 	provider = ParseProvider(int(provider))
-	if provider == ProviderUnknown || provider == ProviderUser {
+	if provider == ProviderUnknown || provider == ProviderUser || provider == ProviderManualScrape {
 		return nil, errUnsupportedProvider
 	}
 	lookup, ok := lookupProvidersByProvider[provider]
@@ -194,25 +200,6 @@ func LookupActressURLByCodeAndName(code, name string, provider Provider) (actres
 	actressURL, err = lookup.LookupActressURLByCodeAndName(code, name)
 	cacheableLookupResult(cacheKey, actressURL, err)
 	return actressURL, err
-}
-
-// LookupCoverURLByCode fetches a cover image URL from the selected provider.
-func LookupCoverURLByCode(code string, provider Provider) (coverURL string, err error) {
-	lookup, err := lookupProviderFor(provider)
-	if err != nil {
-		return "", err
-	}
-	cacheKey := lookupCacheKey(provider, "lookup_cover", code)
-	if cached, ok, err := lookupCacheGet[string](cacheKey); ok {
-		if cached == nil {
-			return "", err
-		}
-		return *cached, err
-	}
-	defer recoverUnsupportedProvider(&err)
-	coverURL, err = lookup.LookupCoverURLByCode(code)
-	cacheableLookupResult(cacheKey, coverURL, err)
-	return coverURL, err
 }
 
 // LookupSeriesURLByCode fetches a series detail URL using a movie code.
