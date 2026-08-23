@@ -10,6 +10,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import FavoriteBorderRoundedIcon from '@mui/icons-material/FavoriteBorderRounded'
 import FavoriteRoundedIcon from '@mui/icons-material/FavoriteRounded'
+import LocalOfferOutlinedIcon from '@mui/icons-material/LocalOfferOutlined'
 import MovieCreationIcon from '@mui/icons-material/MovieCreation'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import PhotoLibraryOutlinedIcon from '@mui/icons-material/PhotoLibraryOutlined'
@@ -45,7 +46,7 @@ import VideoGrid from '@/components/VideoGrid'
 import { isUserJavTag } from '@/constants/jav'
 import { getJavDisplayTitle } from '@/utils/jav'
 import { getIdolDisplayName } from '@/utils/javIdol'
-import { withJavTagDisplayName } from '@/utils/javTag'
+import { getJavTagDisplayName, withJavTagDisplayName } from '@/utils/javTag'
 import { directoryQueryIds, useStore, videoSelectionKey } from '@/store'
 import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
@@ -746,15 +747,261 @@ function parseJavEditNameList(value) {
 
 function scrapedJavTagNames(item) {
   const names = Array.isArray(item?.tags)
-    ? item.tags.filter((tag) => !isUserJavTag(tag)).map((tag) => tag?.name)
+    ? item.tags
+        .filter((tag) => !isUserJavTag(tag))
+        .map((tag) => String(tag?.original_name || tag?.name || '').trim())
     : []
   return parseJavEditNameList(names.join('\n'))
+}
+
+function JavCustomTagModal({ open, item, directoryIds, onClose, onSaved }) {
+  const tagOptions = useStore((state) => state.javTagOptions || [])
+  const loadJavTags = useStore((state) => state.loadJavTags)
+  const [selectedTagIds, setSelectedTagIds] = useState([])
+  const [createdTags, setCreatedTags] = useState([])
+  const [search, setSearch] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState('')
+  const code = String(item?.code || '').trim()
+  const currentUserTags = useMemo(
+    () => (Array.isArray(item?.tags) ? item.tags.filter((tag) => isUserJavTag(tag)) : []),
+    [item?.tags]
+  )
+  const userTagOptions = useMemo(() => tagOptions.filter((tag) => isUserJavTag(tag)), [tagOptions])
+  const mergedTagOptions = useMemo(
+    () => mergeOptionsById(userTagOptions, [...currentUserTags, ...createdTags]),
+    [createdTags, currentUserTags, userTagOptions]
+  )
+  const visibleTagOptions = useMemo(
+    () => filterOptionsByName(mergedTagOptions, search),
+    [mergedTagOptions, search]
+  )
+  const selectedTags = useMemo(
+    () => optionsByIds(mergedTagOptions, selectedTagIds),
+    [mergedTagOptions, selectedTagIds]
+  )
+  const exactMatch = useMemo(() => {
+    const name = search.trim()
+    if (!name) return null
+    return mergedTagOptions.find((tag) => String(tag?.name || '').trim() === name) || null
+  }, [mergedTagOptions, search])
+
+  useEffect(() => {
+    if (!open) return
+    setSelectedTagIds(currentUserTags.map((tag) => String(tag.id)))
+    setCreatedTags([])
+    setSearch('')
+    setSaving(false)
+    setCreating(false)
+    setError('')
+    void loadJavTags?.({ skipUnchanged: true })
+  }, [currentUserTags, loadJavTags, open])
+
+  if (!open) return null
+
+  const toggleTag = (tagId) => {
+    const id = String(tagId)
+    setSelectedTagIds((current) =>
+      current.includes(id) ? current.filter((currentId) => currentId !== id) : [...current, id]
+    )
+    if (error) setError('')
+  }
+
+  const addCustomTag = async () => {
+    const name = search.trim()
+    if (!name || creating || saving) return
+    if (exactMatch?.id) {
+      const id = String(exactMatch.id)
+      setSelectedTagIds((current) => (current.includes(id) ? current : [...current, id]))
+      setSearch('')
+      return
+    }
+
+    setCreating(true)
+    setError('')
+    try {
+      const created = await createJavTag(name)
+      if (!created?.id) throw new Error(zh('创建自定义标签失败', 'Failed to create custom tag'))
+      setCreatedTags((current) => mergeOptionsById(current, [created]))
+      setSelectedTagIds((current) => [...new Set([...current, String(created.id)])])
+      setSearch('')
+      void loadJavTags?.({ force: true })
+    } catch (createError) {
+      setError(getErrorMessage(createError))
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const handleSave = async () => {
+    const javID = Number(item?.id)
+    if (!Number.isFinite(javID) || javID <= 0) {
+      setError(zh('缺少 JAV ID', 'Missing JAV ID'))
+      return
+    }
+
+    setSaving(true)
+    setError('')
+    try {
+      const updated = await updateJavItem(
+        javID,
+        {
+          tag_ids: selectedTagIds.map((id) => Number(id)).filter((id) => id > 0),
+        },
+        { directoryIds }
+      )
+      void loadJavTags?.({ force: true })
+      onSaved?.(updated)
+    } catch (saveError) {
+      setError(getErrorMessage(saveError))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <AppModal
+      ariaLabel={zh('编辑自定义标签', 'Edit custom tags')}
+      className="p-4"
+      closeDisabled={saving || creating}
+      contentClassName="flex max-h-[80vh] w-full max-w-lg flex-col rounded-lg bg-white shadow-2xl"
+      onClose={onClose}
+      zIndex={1600}
+    >
+      <div className="flex items-start justify-between gap-3 p-5 pb-3">
+        <div className="min-w-0">
+          <div className="text-base font-semibold text-gray-900">
+            {zh('编辑自定义标签', 'Edit custom tags')}
+          </div>
+          {code ? <div className="mt-1 truncate text-xs text-gray-500">{code}</div> : null}
+        </div>
+        <button
+          type="button"
+          className="rounded px-2 py-1 text-xl leading-none text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+          onClick={onClose}
+          disabled={saving || creating}
+          aria-label={zh('关闭', 'Close')}
+        >
+          ×
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 pb-5">
+        {selectedTags.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {selectedTags.map((tag) => (
+              <SelectedChip
+                key={tag.id}
+                label={tag.name}
+                disabled={saving || creating}
+                onRemove={() => toggleTag(tag.id)}
+              />
+            ))}
+          </div>
+        ) : null}
+        <div className="flex items-center gap-2">
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => {
+              setSearch(event.target.value)
+              if (error) setError('')
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+              event.preventDefault()
+              void addCustomTag()
+            }}
+            placeholder={zh('搜索或输入新的自定义标签', 'Search or enter a new custom tag')}
+            className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            disabled={saving || creating}
+          />
+          {search.trim() ? (
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700 hover:bg-blue-100 disabled:cursor-wait disabled:opacity-60"
+              onClick={() => void addCustomTag()}
+              disabled={saving || creating}
+            >
+              {creating
+                ? zh('创建中...', 'Creating...')
+                : exactMatch
+                  ? zh('选择', 'Select')
+                  : zh('创建', 'Create')}
+            </button>
+          ) : null}
+        </div>
+        <div className="max-h-64 overflow-y-auto rounded-md border border-gray-200 p-1">
+          {visibleTagOptions.length > 0 ? (
+            visibleTagOptions.map((tag) => {
+              const checked = selectedTagIds.includes(String(tag.id))
+              return (
+                <button
+                  key={tag.id}
+                  type="button"
+                  className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm hover:bg-gray-50 ${
+                    checked ? 'bg-blue-50 text-blue-800' : 'text-gray-800'
+                  }`}
+                  onClick={() => toggleTag(tag.id)}
+                  disabled={saving || creating}
+                  aria-pressed={checked}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[11px] ${
+                      checked
+                        ? 'border-blue-600 bg-blue-600 text-white'
+                        : 'border-gray-300 bg-white text-transparent'
+                    }`}
+                  >
+                    ✓
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                  <span className="shrink-0 text-xs tabular-nums text-gray-400">
+                    {Math.max(0, Number(tag?.count) || 0)}
+                  </span>
+                </button>
+              )
+            })
+          ) : (
+            <div className="px-2 py-4 text-center text-sm text-gray-500">
+              {search.trim()
+                ? zh('没有匹配标签，可直接创建', 'No matching tags; create it directly')
+                : zh('暂无自定义标签', 'No custom tags')}
+            </div>
+          )}
+        </div>
+        {error ? <div className="text-sm text-red-600">{error}</div> : null}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-gray-200 p-5">
+        <button
+          type="button"
+          className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={onClose}
+          disabled={saving || creating}
+        >
+          {zh('取消', 'Cancel')}
+        </button>
+        <button
+          type="button"
+          className={`rounded-md px-4 py-2 text-sm font-medium text-white ${
+            saving ? 'cursor-wait bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'
+          }`}
+          onClick={() => void handleSave()}
+          disabled={saving || creating}
+        >
+          {saving ? zh('保存中...', 'Saving...') : zh('保存', 'Save')}
+        </button>
+      </div>
+    </AppModal>
+  )
 }
 
 function JavEditModal({ open, item, directoryIds, preferChineseName = false, onClose, onSaved }) {
   const tagOptions = useStore((state) => state.javTagOptions || [])
   const loadJavTags = useStore((state) => state.loadJavTags)
   const initializedItemIdRef = useRef(null)
+  const showSimplifiedTags = useStore((state) => configFlag(state.config?.jav_tag_show_simplified))
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [coverUrl, setCoverUrl] = useState('')
@@ -787,10 +1034,15 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
   const [error, setError] = useState('')
   const code = String(item?.code || '').trim()
   const itemTitle = item ? getJavDisplayTitle(item) : ''
+  const directoryIdsKey = (directoryIds || []).join(',')
   const userTagOptions = useMemo(() => tagOptions.filter((tag) => isUserJavTag(tag)), [tagOptions])
   const scrapedTagOptions = useMemo(
     () => tagOptions.filter((tag) => !isUserJavTag(tag)),
     [tagOptions]
+  )
+  const currentScrapedTags = useMemo(
+    () => (Array.isArray(item?.tags) ? item.tags.filter((tag) => !isUserJavTag(tag)) : []),
+    [item?.tags]
   )
   const currentUserTags = useMemo(
     () => (Array.isArray(item?.tags) ? item.tags.filter((tag) => isUserJavTag(tag)) : []),
@@ -800,6 +1052,20 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
   const mergedUserTagOptions = useMemo(
     () => mergeOptionsById(userTagOptions, [...currentUserTags, ...createdUserTags]),
     [createdUserTags, currentUserTags, userTagOptions]
+  )
+  const mergedScrapedTagOptions = useMemo(
+    () => mergeOptionsById(scrapedTagOptions, currentScrapedTags),
+    [currentScrapedTags, scrapedTagOptions]
+  )
+  const scrapedTagDisplayNames = useMemo(
+    () =>
+      new Map(
+        mergedScrapedTagOptions.map((tag) => [
+          String(tag?.original_name || tag?.name || '').trim(),
+          getJavTagDisplayName(tag, showSimplifiedTags),
+        ])
+      ),
+    [mergedScrapedTagOptions, showSimplifiedTags]
   )
   const mergedStudioOptions = useMemo(
     () => mergeOptionsById(studioOptions, item?.studio ? [item.studio] : []),
@@ -852,8 +1118,13 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
     [mergedUserTagOptions, selectedTagIds, tagSearch]
   )
   const visibleScrapedTagOptions = useMemo(
-    () => filterOptionsByName(scrapedTagOptions, scrapedTagSearch),
-    [scrapedTagOptions, scrapedTagSearch]
+    () =>
+      filterOptionsByName(mergedScrapedTagOptions, scrapedTagSearch, (tag) =>
+        [tag?.original_name, tag?.name, tag?.simplified_name, getJavTagDisplayName(tag, true)]
+          .filter(Boolean)
+          .join(' ')
+      ),
+    [mergedScrapedTagOptions, scrapedTagSearch]
   )
   const selectedIdolOptions = useMemo(
     () => optionsByIds(mergedIdolOptions, selectedIdolIds),
@@ -874,7 +1145,8 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
   const availableScrapedTagOptions = useMemo(
     () =>
       visibleScrapedTagOptions.filter(
-        (tag) => !selectedScrapedTagNames.includes(String(tag?.name || '').trim())
+        (tag) =>
+          !selectedScrapedTagNames.includes(String(tag?.original_name || tag?.name || '').trim())
       ),
     [selectedScrapedTagNames, visibleScrapedTagOptions]
   )
@@ -929,13 +1201,16 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
 
   useEffect(() => {
     if (!open) return undefined
+    const activeDirectoryIds = directoryIdsKey
+      ? directoryIdsKey.split(',').map((id) => Number(id))
+      : []
     let cancelled = false
     setOptionsLoading(true)
     setOptionsError('')
     Promise.all([
       fetchAllJavEditOptions(fetchJavStudios),
       fetchAllJavEditOptions(fetchJavSeries),
-      fetchAllJavEditOptions(fetchJavIdolOptions),
+      fetchAllJavEditOptions(fetchJavIdolOptions, { directoryIds: activeDirectoryIds }),
     ])
       .then(([studios, series, idols]) => {
         if (cancelled) return
@@ -956,7 +1231,7 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [directoryIdsKey, open])
 
   if (!open) return null
 
@@ -995,7 +1270,19 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
   }
 
   const addScrapedTagNames = (value = scrapedTagSearch) => {
-    const names = parseJavEditNameList(value)
+    const names = parseJavEditNameList(value).map((name) => {
+      const matchingTag = mergedScrapedTagOptions.find((tag) => {
+        const canonicalName = String(tag?.original_name || tag?.name || '').trim()
+        return (
+          canonicalName === name ||
+          getJavTagDisplayName(tag, showSimplifiedTags) === name ||
+          String(tag?.simplified_name || '').trim() === name
+        )
+      })
+      return matchingTag
+        ? String(matchingTag?.original_name || matchingTag?.name || '').trim()
+        : name
+    })
     if (names.length === 0) return
     setSelectedScrapedTagNames((current) => parseJavEditNameList([...current, ...names].join('\n')))
     setScrapedTagSearch('')
@@ -1201,7 +1488,7 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <JavEditDropdown
-            label={zh('厂商', 'Studio')}
+            label={zh('片商', 'Studio')}
             selectedId={selectedStudioId}
             options={visibleStudioOptions}
             search={studioSearch}
@@ -1209,8 +1496,8 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
             onSelect={setSelectedStudioId}
             open={studioDropdownOpen}
             onOpenChange={setStudioDropdownOpen}
-            emptyLabel={zh('无厂商', 'No studio')}
-            searchPlaceholder={zh('搜索已有厂商', 'Search existing studios')}
+            emptyLabel={zh('无片商', 'No studio')}
+            searchPlaceholder={zh('搜索已有片商', 'Search existing studios')}
             disabled={saving || optionsLoading}
           />
           <JavEditDropdown
@@ -1318,11 +1605,16 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
                     <button
                       key={idol.id}
                       type="button"
-                      className="block w-full rounded px-2 py-1.5 text-left text-sm text-gray-800 hover:bg-gray-50"
+                      className="flex w-full items-center gap-3 rounded px-2 py-1.5 text-left text-sm text-gray-800 hover:bg-gray-50"
                       onClick={() => toggleIdol(idol.id, true)}
                       disabled={saving}
                     >
-                      {getIdolDisplayName(idol, preferChineseName)}
+                      <span className="min-w-0 flex-1 truncate">
+                        {getIdolDisplayName(idol, preferChineseName)}
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-gray-400">
+                        {Math.max(0, Number(idol?.work_count) || 0)}
+                      </span>
                     </button>
                   ))
                 )}
@@ -1337,7 +1629,7 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
             {selectedScrapedTagNames.map((name) => (
               <SelectedChip
                 key={name}
-                label={name}
+                label={scrapedTagDisplayNames.get(name) || name}
                 disabled={saving}
                 onRemove={() =>
                   setSelectedScrapedTagNames((current) => current.filter((item) => item !== name))
@@ -1410,11 +1702,18 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
                     <button
                       key={`${tag.id}-${tag.name}`}
                       type="button"
-                      className="block w-full rounded px-2 py-1.5 text-left text-sm text-gray-800 hover:bg-gray-50"
-                      onClick={() => addScrapedTagNames(tag.name)}
+                      className="flex w-full items-center gap-3 rounded px-2 py-1.5 text-left text-sm text-gray-800 hover:bg-gray-50"
+                      onClick={() =>
+                        addScrapedTagNames(String(tag?.original_name || tag?.name || '').trim())
+                      }
                       disabled={saving}
                     >
-                      {tag.name}
+                      <span className="min-w-0 flex-1 truncate">
+                        {getJavTagDisplayName(tag, showSimplifiedTags)}
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-gray-400">
+                        {Math.max(0, Number(tag?.count) || 0)}
+                      </span>
                     </button>
                   ))
                 )}
@@ -1501,11 +1800,14 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
                     <button
                       key={`${tag.id}-${tag.provider || 0}`}
                       type="button"
-                      className="block w-full rounded px-2 py-1.5 text-left text-sm text-gray-800 hover:bg-gray-50"
+                      className="flex w-full items-center gap-3 rounded px-2 py-1.5 text-left text-sm text-gray-800 hover:bg-gray-50"
                       onClick={() => toggleTag(tag.id, true)}
                       disabled={saving}
                     >
-                      {tag.name}
+                      <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                      <span className="shrink-0 text-xs tabular-nums text-gray-400">
+                        {Math.max(0, Number(tag?.count) || 0)}
+                      </span>
                     </button>
                   ))
                 )}
@@ -1965,6 +2267,7 @@ function JavCard({
   const note = String(item?.note || '').trim()
   const [coverVersion, setCoverVersion] = useState(0)
   const [editorOpen, setEditorOpen] = useState(false)
+  const [customTagEditorOpen, setCustomTagEditorOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
   const [noteCopyStatus, setNoteCopyStatus] = useState('')
   const coverBase = code ? `/jav/${encodeURIComponent(code)}/cover` : null
@@ -2157,6 +2460,12 @@ function JavCard({
     onOpenJavFavorites?.(item)
   }
 
+  const handleOpenCustomTags = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setCustomTagEditorOpen(true)
+  }
+
   const handleFavoriteRatingChange = async (event, value) => {
     event?.stopPropagation()
     const javID = Number(item?.id)
@@ -2214,6 +2523,20 @@ function JavCard({
       setCoverVersion(Date.now())
     }
     setEditorOpen(false)
+  }
+
+  const handleCustomTagsSaved = (updated) => {
+    if (updated?.id) {
+      useStore.setState((state) => {
+        if (!Array.isArray(state.javItems)) return {}
+        return {
+          javItems: state.javItems.map((current) =>
+            Number(current?.id) === Number(updated.id) ? { ...current, ...updated } : current
+          ),
+        }
+      })
+    }
+    setCustomTagEditorOpen(false)
   }
 
   const canPlay = Boolean(primaryVideo && primaryVideo.id)
@@ -2684,6 +3007,15 @@ function JavCard({
           ) : null}
           <button
             type="button"
+            className="card-hover-focus-visible absolute right-12 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/65 text-white opacity-0 shadow-lg shadow-black/40 transition hover:bg-black/80 group-hover:opacity-100"
+            title={zh('编辑自定义标签', 'Edit custom tags')}
+            aria-label={zh('编辑自定义标签', 'Edit custom tags')}
+            onClick={handleOpenCustomTags}
+          >
+            <LocalOfferOutlinedIcon sx={{ fontSize: 18 }} />
+          </button>
+          <button
+            type="button"
             className={`card-hover-focus-visible absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
               favoriteCount > 0
                 ? 'bg-amber-400 text-amber-950 hover:bg-amber-300'
@@ -3043,6 +3375,13 @@ function JavCard({
         preferChineseName={preferChineseName}
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
+      />
+      <JavCustomTagModal
+        open={customTagEditorOpen}
+        item={item}
+        directoryIds={directoryIds}
+        onClose={() => setCustomTagEditorOpen(false)}
+        onSaved={handleCustomTagsSaved}
       />
       {detailOpen ? (
         <JavDetailModal

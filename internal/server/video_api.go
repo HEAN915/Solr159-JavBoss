@@ -921,20 +921,30 @@ func manualScrapeRequestToJavInfo(req videoJavManualScrapeRequest) (*jav.JavInfo
 	if code == "" {
 		return nil, errors.New("code is required")
 	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return nil, errors.New("title is required")
+	}
+	if strings.TrimSpace(req.ReleaseDate) == "" {
+		return nil, errors.New("release_date is required")
+	}
 	releaseUnix, err := parseJavEditReleaseUnix(req.ReleaseDate)
 	if err != nil {
 		return nil, err
 	}
-	durationMin := 0
-	if req.DurationMin != nil {
-		durationMin = *req.DurationMin
-		if durationMin < 0 {
-			return nil, errors.New("duration_min must be non-negative")
-		}
+	if req.DurationMin == nil {
+		return nil, errors.New("duration_min is required")
+	}
+	durationMin := *req.DurationMin
+	if durationMin < 0 {
+		return nil, errors.New("duration_min must be non-negative")
+	}
+	if req.IsUncensored == nil {
+		return nil, errors.New("is_uncensored is required")
 	}
 	info := &jav.JavInfo{
 		Code:         code,
-		Title:        strings.TrimSpace(req.Title),
+		Title:        title,
 		Studio:       strings.TrimSpace(req.Studio),
 		Series:       strings.TrimSpace(req.Series),
 		ReleaseUnix:  releaseUnix,
