@@ -9,6 +9,46 @@
   if (!provider.parser) return;
   const parser = provider.parser;
 
+  if (
+    provider.name === "JavDB" &&
+    window.top === window &&
+    parser.isAssistedNavigationURL?.(location.href)
+  ) {
+    const blankStyle = document.createElement("style");
+    blankStyle.textContent =
+      "html { visibility: hidden !important; background: #fff !important; }";
+    blankStyle.setAttribute("data-javboss-assisted-navigation", "");
+    document.documentElement.appendChild(blankStyle);
+
+    let revealTimer = window.setTimeout(() => blankStyle.remove(), 15000);
+    const revealPage = () => {
+      window.clearTimeout(revealTimer);
+      revealTimer = 0;
+      blankStyle.remove();
+    };
+    const navigateOrReveal = () => {
+      const directURL = parser.findAssistedNavigationURL?.(
+        document,
+        location.href,
+      );
+      if (directURL && directURL !== location.href) {
+        location.replace(directURL);
+        return true;
+      }
+      if (document.readyState === "complete") revealPage();
+      else window.addEventListener("load", revealPage, { once: true });
+      return false;
+    };
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", navigateOrReveal, {
+        once: true,
+      });
+    } else if (navigateOrReveal()) {
+      return;
+    }
+  }
+
   const BUTTON_ID = "javboss-browser-scrape-fill-button";
   const CONTROLS_ID = "javboss-browser-scrape-controls";
   const SESSION_STORAGE_KEY = "javboss:browser-scrape-session";
