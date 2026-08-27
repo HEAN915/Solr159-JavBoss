@@ -15,6 +15,14 @@ const contentScript = fs.readFileSync(
   path.join(__dirname, "..", "content", "scrape-content.js"),
   "utf8",
 );
+const assistLoadingHTML = fs.readFileSync(
+  path.join(__dirname, "..", "assist-loading.html"),
+  "utf8",
+);
+const assistLoadingCSS = fs.readFileSync(
+  path.join(__dirname, "..", "assist-loading.css"),
+  "utf8",
+);
 
 function extensionIdFromKey(key) {
   const digest = crypto
@@ -79,12 +87,22 @@ test("JavBus opens in a new tab instead of a popup window", () => {
   assert.doesNotMatch(serviceWorker, /chrome\.windows\.create\(/);
 });
 
+test("assisted JavDB navigation starts on a forced-light loading page", () => {
+  assert.match(serviceWorker, /getURL\("assist-loading\.html"\)/);
+  assert.match(assistLoadingHTML, /name="color-scheme" content="only light"/);
+  assert.match(assistLoadingHTML, /bgcolor="#ffffff"/);
+  assert.match(assistLoadingCSS, /background: #fff/);
+  assert.match(contentScript, /position: fixed !important/);
+  assert.match(contentScript, /z-index: 2147483647 !important/);
+  assert.match(contentScript, /color-scheme: only light !important/);
+});
+
 test("relay propagation uses a temporary marker instead of tab opener inheritance", () => {
   assert.doesNotMatch(serviceWorker, /chrome\.tabs\.onCreated/);
   assert.match(serviceWorker, /RELAY_SESSION_KEY_PREFIX/);
   assert.match(contentScript, /window\.sessionStorage/);
-  assert.match(contentScript, /JAVBOSS_JAVBUS_DISABLE_RELAY/);
+  assert.match(contentScript, /JAVBOSS_SCRAPE_DISABLE_RELAY/);
   assert.doesNotMatch(contentScript, /移除/);
-  assert.doesNotMatch(contentScript, /JAVBOSS_JAVBUS_FINISH_RELAY/);
+  assert.doesNotMatch(contentScript, /JAVBOSS_SCRAPE_FINISH_RELAY/);
   assert.doesNotMatch(serviceWorker, /chrome\.tabs\.remove\(/);
 });
