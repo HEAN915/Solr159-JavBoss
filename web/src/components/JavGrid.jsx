@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IconButton, Popper, Rating, Tooltip } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
+import CheckOutlinedIcon from '@mui/icons-material/CheckOutlined'
 import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined'
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
@@ -131,7 +132,6 @@ export default function JavGrid({
   onManageVideoRename,
   onManageVideoDelete,
   onManageVideoTagClick,
-  selectionMode = false,
   selectedJavIds,
   onToggleSelection,
 }) {
@@ -379,7 +379,6 @@ export default function JavGrid({
             onManageVideoRename={onManageVideoRename}
             onManageVideoDelete={onManageVideoDelete}
             onManageVideoTagClick={onManageVideoTagClick}
-            selectionMode={selectionMode}
             selectedForBatch={selectedJavIds?.has(Number(item?.id))}
             onToggleSelection={onToggleSelection}
             onOpenManualCatalogScrape={setManualScrapeItem}
@@ -2249,7 +2248,6 @@ function JavCard({
   onManageVideoRename,
   onManageVideoDelete,
   onManageVideoTagClick,
-  selectionMode = false,
   selectedForBatch = false,
   onToggleSelection,
   onOpenManualCatalogScrape,
@@ -2865,7 +2863,7 @@ function JavCard({
 
   return (
     <>
-      <div className="relative flex flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg">
+      <div className="flex flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg">
         <div className="card-hover-scope group relative aspect-[800/538] overflow-hidden bg-white">
           {cover ? (
             <JavCoverImage src={cover} alt={item?.code || zh('JAV 封面', 'JAV cover')} />
@@ -3013,6 +3011,33 @@ function JavCard({
                 </Tooltip>
               ))}
             </div>
+          ) : null}
+          {onToggleSelection ? (
+            <button
+              type="button"
+              className={`card-hover-focus-visible absolute right-[5.5rem] top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
+                selectedForBatch
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'bg-black/65 text-white opacity-0 hover:bg-black/80 group-hover:opacity-100'
+              }`}
+              title={
+                selectedForBatch
+                  ? zh('取消选择作品', 'Unselect work')
+                  : zh('选择作品用于批量编辑', 'Select work for batch editing')
+              }
+              aria-label={
+                selectedForBatch
+                  ? zh('取消选择作品', 'Unselect work')
+                  : zh('选择作品用于批量编辑', 'Select work for batch editing')
+              }
+              aria-pressed={selectedForBatch}
+              onClick={(event) => {
+                event.stopPropagation()
+                onToggleSelection(item)
+              }}
+            >
+              <CheckOutlinedIcon sx={{ fontSize: 19 }} />
+            </button>
           ) : null}
           <button
             type="button"
@@ -3376,34 +3401,6 @@ function JavCard({
             </div>
           ) : null}
         </div>
-        {selectionMode ? (
-          <button
-            type="button"
-            onClick={() => onToggleSelection?.(item)}
-            aria-pressed={selectedForBatch}
-            aria-label={
-              selectedForBatch
-                ? zh(`取消选择 ${code || '作品'}`, `Unselect ${code || 'work'}`)
-                : zh(`选择 ${code || '作品'}`, `Select ${code || 'work'}`)
-            }
-            className={`absolute inset-0 z-30 flex items-center justify-center transition-colors ${
-              selectedForBatch
-                ? 'bg-slate-950/45 hover:bg-slate-950/50'
-                : 'bg-slate-950/20 hover:bg-slate-950/30'
-            }`}
-          >
-            <span
-              aria-hidden="true"
-              className={`flex h-14 w-14 items-center justify-center rounded-full border-2 text-3xl font-semibold shadow-lg transition-transform ${
-                selectedForBatch
-                  ? 'scale-100 border-white/90 bg-slate-100/90 text-slate-700'
-                  : 'scale-90 border-white/70 bg-slate-100/80 text-slate-500'
-              }`}
-            >
-              {selectedForBatch ? '✓' : '+'}
-            </span>
-          </button>
-        ) : null}
       </div>
       <JavEditModal
         open={editorOpen}
