@@ -2,6 +2,7 @@ import SwapVertIcon from '@mui/icons-material/SwapVert'
 import AddIcon from '@mui/icons-material/Add'
 import { Popover } from '@mui/material'
 import { useState } from 'react'
+import JavBulkActionsModal from '@/components/JavBulkActionsModal'
 import JavGrid from '@/components/JavGrid'
 import Pagination from '@/components/Pagination'
 import WaterfallLoader from '@/components/WaterfallLoader'
@@ -72,6 +73,9 @@ export default function JavView({
 }) {
   const contentClass = javRandomMode ? 'mt-4' : ''
   const [sortAnchorEl, setSortAnchorEl] = useState(null)
+  const [selectedItemsById, setSelectedItemsById] = useState(() => new Map())
+  const [bulkActionsOpen, setBulkActionsOpen] = useState(false)
+  const [bulkNotice, setBulkNotice] = useState('')
   const effectiveSort = javResolvedSort
   const currentOption = findSortOption(JAV_SORT_OPTIONS, effectiveSort) || JAV_SORT_OPTIONS[0]
   const activeWaterfallMode = waterfallMode && !javRandomMode
@@ -86,6 +90,35 @@ export default function JavView({
 
   const closeSortMenu = () => {
     setSortAnchorEl(null)
+  }
+
+  const selectedItems = Array.from(selectedItemsById.values())
+  const selectedJavIds = new Set(selectedItemsById.keys())
+  const toggleSelection = (item) => {
+    const id = Number(item?.id)
+    if (!Number.isFinite(id) || id <= 0) return
+    setSelectedItemsById((current) => {
+      const next = new Map(current)
+      if (next.has(id)) next.delete(id)
+      else next.set(id, item)
+      return next
+    })
+    setBulkNotice('')
+  }
+  const selectPage = () => {
+    setSelectedItemsById((current) => {
+      const next = new Map(current)
+      for (const item of javItems || []) {
+        const id = Number(item?.id)
+        if (Number.isFinite(id) && id > 0) next.set(id, item)
+      }
+      return next
+    })
+    setBulkNotice('')
+  }
+  const clearSelection = () => {
+    setSelectedItemsById(new Map())
+    setBulkNotice('')
   }
 
   return (
@@ -115,7 +148,37 @@ export default function JavView({
               onWaterfallModeChange={onWaterfallModeChange}
             />
           </div>
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
+            {selectedItems.length > 0 ? (
+              <>
+                <span className="inline-flex items-center text-sm text-blue-700">
+                  {zh(`已选 ${selectedItems.length} 部`, `${selectedItems.length} selected`)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setBulkActionsOpen(true)}
+                  className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
+                >
+                  {zh('批量编辑', 'Batch edit')}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="rounded-md border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  {zh('取消选择', 'Clear')}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={selectPage}
+                disabled={!Array.isArray(javItems) || javItems.length === 0}
+                className="rounded-md border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {zh('全选本页', 'Select page')}
+              </button>
+            )}
             <button
               type="button"
               onClick={onCreateWork}
@@ -204,6 +267,40 @@ export default function JavView({
           </div>
         </div>
       )}
+      {javRandomMode ? (
+        <div className="mb-3 flex flex-wrap justify-end gap-2">
+          {selectedItems.length > 0 ? (
+            <>
+              <span className="inline-flex items-center text-sm text-blue-700">
+                {zh(`已选 ${selectedItems.length} 部`, `${selectedItems.length} selected`)}
+              </span>
+              <button
+                type="button"
+                onClick={() => setBulkActionsOpen(true)}
+                className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
+              >
+                {zh('批量编辑', 'Batch edit')}
+              </button>
+              <button
+                type="button"
+                onClick={clearSelection}
+                className="rounded-md border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                {zh('取消选择', 'Clear')}
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={selectPage}
+              disabled={!Array.isArray(javItems) || javItems.length === 0}
+              className="rounded-md border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {zh('全选本页', 'Select page')}
+            </button>
+          )}
+        </div>
+      ) : null}
       {javLoading ? (
         <div
           className={`${contentClass} flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500`}
@@ -212,6 +309,11 @@ export default function JavView({
         </div>
       ) : (
         <div className={contentClass}>
+          {bulkNotice ? (
+            <div className="mb-3 rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+              {bulkNotice}
+            </div>
+          ) : null}
           <JavGrid
             items={javItems}
             columns={javGridColumns}
@@ -244,6 +346,8 @@ export default function JavView({
             onManageVideoRename={onManageVideoRename}
             onManageVideoDelete={onManageVideoDelete}
             onManageVideoTagClick={onManageVideoTagClick}
+            selectedJavIds={selectedJavIds}
+            onToggleSelection={toggleSelection}
           />
         </div>
       )}
@@ -252,6 +356,16 @@ export default function JavView({
         hasMore={hasMore}
         loading={loadingMore}
         onLoadMore={onLoadMore}
+      />
+      <JavBulkActionsModal
+        open={bulkActionsOpen}
+        items={selectedItems}
+        onClose={() => setBulkActionsOpen(false)}
+        onDone={(message) => {
+          setBulkActionsOpen(false)
+          setSelectedItemsById(new Map())
+          setBulkNotice(message)
+        }}
       />
     </>
   )

@@ -1,9 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import AppModal from '@/components/AppModal'
 import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
 
 const CODE_PATTERN = /^[A-Z0-9_-]+$/
+const JAVBUS_ORIGIN = 'https://www.javbus.com'
+const JAVLIBRARY_ORIGIN = 'https://www.javlibrary.com'
+const JAVDB_ORIGIN = 'https://javdb.com'
+const AVSOX_ORIGIN = 'https://avsox.click'
+const BROWSER_SCRAPE_PROVIDERS = {
+  javbus: { name: 'JavBus' },
+  javlibrary: { name: 'JavLibrary' },
+  javdb: { name: 'JavDB' },
+  avsox: { name: 'AVSOX' },
+}
+const JAVBOSS_EXTENSION_ID = 'iikdjhkpjihfkehccfmkpkdmenmbaacn'
+const JAVBOSS_EXTENSION_ORIGIN = `chrome-extension://${JAVBOSS_EXTENSION_ID}`
+const JAVBOSS_EXTENSION_BRIDGE_URL = `${JAVBOSS_EXTENSION_ORIGIN}/bridge.html`
+const SCRAPE_MESSAGE_CONNECT = 'JAVBOSS_EXTENSION_CONNECT'
+const SCRAPE_MESSAGE_READY = 'JAVBOSS_EXTENSION_READY'
+const SCRAPE_MESSAGE_METADATA = 'JAVBOSS_SCRAPE_METADATA'
+const SCRAPE_MESSAGE_OPEN = 'JAVBOSS_SCRAPE_OPEN'
+const SCRAPE_MESSAGE_OPEN_STATUS = 'JAVBOSS_SCRAPE_OPEN_STATUS'
 
 const emptyManualInfo = {
   code: '',
@@ -75,6 +93,85 @@ function infoFromProvider(data, fallbackCode = '') {
   }
 }
 
+function browserScrapeURL(provider, code) {
+  const normalizedCode = String(code || '')
+    .trim()
+    .toUpperCase()
+  const validCode = normalizedCode && CODE_PATTERN.test(normalizedCode)
+  if (provider === 'javlibrary') {
+    if (!validCode) return `${JAVLIBRARY_ORIGIN}/tw/`
+    const url = new URL('/tw/vl_searchbyid.php', JAVLIBRARY_ORIGIN)
+    url.searchParams.set('keyword', normalizedCode)
+    return url.href
+  }
+  if (provider === 'javdb') {
+    if (!validCode) return `${JAVDB_ORIGIN}/`
+    const url = new URL('/search', JAVDB_ORIGIN)
+    url.searchParams.set('q', normalizedCode)
+    url.searchParams.set('f', 'all')
+    return url.href
+  }
+  if (provider === 'avsox') {
+    return validCode
+      ? `${AVSOX_ORIGIN}/tw/search/${encodeURIComponent(normalizedCode)}`
+      : `${AVSOX_ORIGIN}/tw`
+  }
+  return validCode ? `${JAVBUS_ORIGIN}/${encodeURIComponent(normalizedCode)}` : JAVBUS_ORIGIN
+}
+
+function newBrowserScrapeSessionId() {
+  if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID()
+  return `javboss-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function limitedText(value, maxLength) {
+  return String(value || '')
+    .trim()
+    .slice(0, maxLength)
+}
+
+function limitedTextList(value, maxItems = 200) {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, maxItems).map((item) => limitedText(item?.name || item, 200))
+}
+
+function safeExternalURL(value) {
+  const candidate = limitedText(value, 2048)
+  if (!candidate) return ''
+  try {
+    const parsed = new URL(candidate)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : ''
+  } catch {
+    return ''
+  }
+}
+
+function infoFromBrowserExtension(data, fallbackCode = '') {
+  if (!data || typeof data !== 'object') return null
+  const returnedCode = limitedText(data.code || fallbackCode, 64).toUpperCase()
+  if (!returnedCode || !CODE_PATTERN.test(returnedCode)) return null
+  const rawDuration = Number.parseInt(data.duration_min, 10)
+  const releaseDate = limitedText(data.release_date, 10)
+  return infoFromProvider(
+    {
+      code: returnedCode,
+      title: limitedText(data.title, 5000),
+      studio: limitedText(data.studio, 500),
+      series: limitedText(data.series, 500),
+      release_date: /^\d{4}-\d{2}-\d{2}$/.test(releaseDate) ? releaseDate : '',
+      duration_min:
+        Number.isFinite(rawDuration) && rawDuration >= 0 && rawDuration <= 10000
+          ? rawDuration
+          : null,
+      tags: limitedTextList(data.tags),
+      actors: limitedTextList(data.actors, 100),
+      cover_url: safeExternalURL(data.cover_url),
+      is_uncensored: typeof data.is_uncensored === 'boolean' ? data.is_uncensored : undefined,
+    },
+    fallbackCode
+  )
+}
+
 function manualPayload(info) {
   const duration = String(info.duration_min || '').trim()
   const isUncensored = String(info.is_uncensored || '')
@@ -111,6 +208,13 @@ export default function JavManualScrapeModal({
   const [lookupLoading, setLookupLoading] = useState(false)
   const [lookupProvider, setLookupProvider] = useState('')
   const [lookupError, setLookupError] = useState('')
+  const browserScrapeBridgeRef = useRef(null)
+  const browserScrapeProviderRef = useRef('')
+  const [browserScrapeSessionId, setBrowserScrapeSessionId] = useState('')
+  const [browserScrapeExtensionReady, setBrowserScrapeExtensionReady] = useState(false)
+  const [browserScrapeOpening, setBrowserScrapeOpening] = useState(false)
+  const [browserScrapeStatus, setBrowserScrapeStatus] = useState('')
+  const [browserScrapeSourceURL, setBrowserScrapeSourceURL] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -118,7 +222,114 @@ export default function JavManualScrapeModal({
     setLookupLoading(false)
     setLookupProvider('')
     setLookupError('')
+    setBrowserScrapeSessionId(newBrowserScrapeSessionId())
+    setBrowserScrapeExtensionReady(false)
+    setBrowserScrapeOpening(false)
+    setBrowserScrapeStatus('')
+    setBrowserScrapeSourceURL('')
+    browserScrapeProviderRef.current = ''
   }, [open, item])
+
+  useEffect(() => {
+    if (!open) return undefined
+
+    const receiveBrowserScrapeMessage = (event) => {
+      if (
+        event.origin !== JAVBOSS_EXTENSION_ORIGIN ||
+        event.source !== browserScrapeBridgeRef.current?.contentWindow
+      ) {
+        return
+      }
+      const message = event.data
+      if (!message || message.version !== 1 || message.sessionId !== browserScrapeSessionId) return
+
+      if (message.type === SCRAPE_MESSAGE_READY) {
+        setBrowserScrapeExtensionReady(true)
+        setBrowserScrapeStatus(zh('JavBoss 助手已连接', 'JavBoss Assistant connected'))
+        return
+      }
+      if (message.type === SCRAPE_MESSAGE_OPEN_STATUS) {
+        setBrowserScrapeOpening(false)
+        setBrowserScrapeStatus(
+          message.ok
+            ? zh(
+                `已打开 ${browserScrapeProviderRef.current || '元数据网站'} 新标签页。`,
+                `Opened a new ${browserScrapeProviderRef.current || 'metadata site'} tab.`
+              )
+            : zh(
+                `打开新标签页失败：${limitedText(message.error, 300)}`,
+                `Failed to open a new tab: ${limitedText(message.error, 300)}`
+              )
+        )
+        return
+      }
+      if (message.type !== SCRAPE_MESSAGE_METADATA) return
+
+      const fallbackCode = String(item?.code || '')
+        .trim()
+        .toUpperCase()
+      const nextInfo = infoFromBrowserExtension(message.payload, fallbackCode)
+      if (!nextInfo) {
+        setBrowserScrapeStatus(
+          zh('扩展返回的数据无效，请确认当前是作品详情页。', 'The extension returned invalid data.')
+        )
+        return
+      }
+      // A custom work's code is its stable identity. Never replace it with a
+      // potentially similar code parsed from a third-party page.
+      setManualInfo((current) => ({ ...current, ...nextInfo, code: fallbackCode }))
+      setBrowserScrapeSourceURL(safeExternalURL(message.payload?.source_url))
+      const sourceName = limitedText(message.payload?.source_name, 50) || '元数据网站'
+      setBrowserScrapeStatus(
+        zh(
+          `已从 ${sourceName} 回填 ${fallbackCode}，请检查后保存。`,
+          `Filled ${fallbackCode} from ${sourceName}. Review it before saving.`
+        )
+      )
+    }
+
+    window.addEventListener('message', receiveBrowserScrapeMessage)
+    return () => window.removeEventListener('message', receiveBrowserScrapeMessage)
+  }, [browserScrapeSessionId, item?.code, open])
+
+  useEffect(() => {
+    if (!open || !browserScrapeSessionId) return undefined
+    const connect = () => {
+      browserScrapeBridgeRef.current?.contentWindow?.postMessage(
+        { type: SCRAPE_MESSAGE_CONNECT, sessionId: browserScrapeSessionId },
+        JAVBOSS_EXTENSION_ORIGIN
+      )
+    }
+    const timers = [0, 300, 1000].map((delay) => window.setTimeout(connect, delay))
+    return () => timers.forEach((timer) => window.clearTimeout(timer))
+  }, [browserScrapeSessionId, open])
+
+  useEffect(() => {
+    if (!open || !browserScrapeSessionId || browserScrapeExtensionReady) return undefined
+    const timer = window.setTimeout(() => {
+      setBrowserScrapeStatus(
+        zh(
+          '尚未检测到扩展。请重新加载 browser-extension 目录并刷新 JavBoss。',
+          'Extension not detected. Reload the browser-extension directory, then reload JavBoss.'
+        )
+      )
+    }, 5000)
+    return () => window.clearTimeout(timer)
+  }, [browserScrapeExtensionReady, browserScrapeSessionId, open])
+
+  useEffect(() => {
+    if (!browserScrapeOpening) return undefined
+    const timer = window.setTimeout(() => {
+      setBrowserScrapeOpening(false)
+      setBrowserScrapeStatus(
+        zh(
+          '打开元数据网站超时，请重新加载扩展后重试。',
+          'Opening the metadata site timed out. Reload the extension and try again.'
+        )
+      )
+    }, 10000)
+    return () => window.clearTimeout(timer)
+  }, [browserScrapeOpening])
 
   if (!open) return null
 
@@ -154,6 +365,35 @@ export default function JavManualScrapeModal({
       setLookupLoading(false)
       setLookupProvider('')
     }
+  }
+
+  const openBrowserScrapeProvider = (provider) => {
+    if (browserScrapeOpening) return
+    const providerConfig = BROWSER_SCRAPE_PROVIDERS[provider]
+    if (!providerConfig) return
+    if (!browserScrapeSessionId || !browserScrapeExtensionReady) {
+      setBrowserScrapeStatus(
+        zh(
+          '未连接到扩展，请确认已重新加载扩展并刷新 JavBoss。',
+          'Extension is not connected. Reload the extension and the JavBoss page.'
+        )
+      )
+      return
+    }
+    setBrowserScrapeSourceURL('')
+    setBrowserScrapeOpening(true)
+    browserScrapeProviderRef.current = providerConfig.name
+    setBrowserScrapeStatus(
+      zh(`正在打开 ${providerConfig.name} 新标签页…`, `Opening a new ${providerConfig.name} tab...`)
+    )
+    browserScrapeBridgeRef.current?.contentWindow?.postMessage(
+      {
+        type: SCRAPE_MESSAGE_OPEN,
+        sessionId: browserScrapeSessionId,
+        url: browserScrapeURL(provider, normalizedCode),
+      },
+      JAVBOSS_EXTENSION_ORIGIN
+    )
   }
 
   const submit = () => {
@@ -225,6 +465,47 @@ export default function JavManualScrapeModal({
               ))}
             </div>
             {lookupError ? <div className="mt-1 text-xs text-red-600">{lookupError}</div> : null}
+            <div className="mt-3 rounded border border-dashed border-blue-200 bg-blue-50/60 p-3">
+              <div className="text-xs font-medium text-gray-700">
+                {zh('浏览器助手回填', 'Browser assistant fill')}
+              </div>
+              <div className="mt-1 text-[11px] leading-4 text-gray-500">
+                {zh(
+                  '直接刮削失败时，点击下方网站并在作品详情页点“回填到 JavBoss”；资料只会填入当前窗口，确认后再保存。',
+                  'When direct lookup fails, open a site below and click “Fill JavBoss” on its work page. Data is only filled into this window until you save it.'
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {Object.entries(BROWSER_SCRAPE_PROVIDERS).map(([provider, providerConfig]) => (
+                  <button
+                    key={provider}
+                    type="button"
+                    onClick={() => openBrowserScrapeProvider(provider)}
+                    disabled={saving || lookupLoading || browserScrapeOpening}
+                    className="rounded border border-blue-300 bg-white px-3 py-1 text-xs font-medium text-blue-700 hover:border-blue-500 hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    {browserScrapeOpening &&
+                    browserScrapeProviderRef.current === providerConfig.name
+                      ? zh('正在打开…', 'Opening...')
+                      : zh(`打开 ${providerConfig.name}`, `Open ${providerConfig.name}`)}
+                  </button>
+                ))}
+              </div>
+              {browserScrapeStatus ? (
+                <div
+                  className={`mt-2 text-xs leading-5 ${
+                    browserScrapeExtensionReady ? 'text-blue-700' : 'text-amber-700'
+                  }`}
+                >
+                  {browserScrapeStatus}
+                </div>
+              ) : null}
+              {browserScrapeSourceURL ? (
+                <div className="mt-1 truncate text-xs text-gray-400" title={browserScrapeSourceURL}>
+                  {browserScrapeSourceURL}
+                </div>
+              ) : null}
+            </div>
           </div>
           <div className="md:col-span-2">
             <label className="mb-1 block text-xs font-medium text-gray-500">
@@ -329,6 +610,21 @@ export default function JavManualScrapeModal({
           </button>
         </div>
       </div>
+      <iframe
+        ref={browserScrapeBridgeRef}
+        src={JAVBOSS_EXTENSION_BRIDGE_URL}
+        title={zh('JavBoss 扩展通信桥', 'JavBoss extension bridge')}
+        className="hidden"
+        tabIndex={-1}
+        aria-hidden="true"
+        onLoad={() => {
+          if (!browserScrapeSessionId) return
+          browserScrapeBridgeRef.current?.contentWindow?.postMessage(
+            { type: SCRAPE_MESSAGE_CONNECT, sessionId: browserScrapeSessionId },
+            JAVBOSS_EXTENSION_ORIGIN
+          )
+        }}
+      />
     </AppModal>
   )
 }

@@ -16,6 +16,7 @@ go build -trimpath -ldflags '-s -w -X main.buildMode=release' -o "$OUT_DIR/javbo
 mkdir -p "$OUT_DIR/web"
 cp -R "$ROOT_DIR/web/dist" "$OUT_DIR/web/dist"
 cp -R "$ROOT_DIR/modernz" "$OUT_DIR/modernz"
+cp -R "$ROOT_DIR/browser-extension" "$OUT_DIR/browser-extension"
 cp -R "$ROOT_DIR/data" "$OUT_DIR/data"
 cp "$ASSET_DIR/config.toml" "$OUT_DIR/config.toml"
 cp "$ASSET_DIR/javboss.command" "$OUT_DIR/javboss.command"

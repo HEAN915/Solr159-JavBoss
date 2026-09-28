@@ -131,6 +131,8 @@ export default function JavGrid({
   onManageVideoRename,
   onManageVideoDelete,
   onManageVideoTagClick,
+  selectedJavIds,
+  onToggleSelection,
 }) {
   const directoryIds = useStore(directoryQueryIds)
   const loadJavs = useStore((state) => state.loadJavs)
@@ -376,6 +378,8 @@ export default function JavGrid({
             onManageVideoRename={onManageVideoRename}
             onManageVideoDelete={onManageVideoDelete}
             onManageVideoTagClick={onManageVideoTagClick}
+            selectedForBatch={selectedJavIds?.has(Number(item?.id))}
+            onToggleSelection={onToggleSelection}
             onOpenManualCatalogScrape={setManualScrapeItem}
             onDeleteCatalogItem={setDeleteCatalogItem}
             loadIdolPreview={loadIdolPreview}
@@ -2243,6 +2247,8 @@ function JavCard({
   onManageVideoRename,
   onManageVideoDelete,
   onManageVideoTagClick,
+  selectedForBatch = false,
+  onToggleSelection,
   onOpenManualCatalogScrape,
   onDeleteCatalogItem,
   loadIdolPreview,
@@ -2871,6 +2877,25 @@ function JavCard({
             onClick={handleOpenDetail}
             aria-label={zh(`查看 ${code || 'JAV'} 详情`, `View ${code || 'JAV'} details`)}
           />
+          {onToggleSelection ? (
+            <label
+              className={`absolute left-2 top-2 z-20 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border shadow-lg ${
+                selectedForBatch
+                  ? 'border-blue-600 bg-blue-600 text-white'
+                  : 'border-white/80 bg-black/55 text-white opacity-0 group-hover:opacity-100'
+              }`}
+              title={zh('选择作品用于批量编辑', 'Select work for batch editing')}
+            >
+              <input
+                type="checkbox"
+                checked={selectedForBatch}
+                onClick={(event) => event.stopPropagation()}
+                onChange={() => onToggleSelection(item)}
+                className="h-3.5 w-3.5 accent-white"
+                aria-label={zh('选择作品', 'Select work')}
+              />
+            </label>
+          ) : null}
           <div className="card-hover-focus-visible pointer-events-none absolute inset-0 z-[2] flex items-center justify-center bg-black/0 text-white opacity-0 transition-opacity group-hover:opacity-100">
             <button
               onClick={handlePlay}

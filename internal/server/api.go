@@ -136,6 +136,7 @@ func registerJavFavoriteRoutes(router gin.IRoutes, routeEntity string, dbEntity 
 	if routeEntity == "jav" {
 		router.GET("/jav/items/:id/favorite-groups", listJavFavoriteGroupIDsFor(dbEntity))
 		router.PUT("/jav/items/:id/favorite-groups", replaceJavFavoriteGroupsFor(dbEntity))
+		router.POST("/jav/items/favorite-groups/add", addJavsToFavoriteGroups)
 		return
 	}
 	if routeEntity == "series" {

@@ -737,6 +737,75 @@ func TestDeleteJavFavoriteGroupCascadesMapsOnNewConnection(t *testing.T) {
 	}
 }
 
+func TestAddJavsToFavoriteGroupsAddsEachWorkOnce(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	javs := []models.Jav{
+		{Code: "BULK-FAV-001", Title: "Bulk favorite one"},
+		{Code: "BULK-FAV-002", Title: "Bulk favorite two"},
+	}
+	if err := db.Create(&javs).Error; err != nil {
+		t.Fatalf("create JAVs: %v", err)
+	}
+	first, err := CreateJavFavoriteGroup(ctx, JavFavoriteEntityJav, "First group")
+	if err != nil {
+		t.Fatalf("create first group: %v", err)
+	}
+	second, err := CreateJavFavoriteGroup(ctx, JavFavoriteEntityJav, "Second group")
+	if err != nil {
+		t.Fatalf("create second group: %v", err)
+	}
+	if err := db.Create(&models.JavFavoriteMap{
+		JavFavoriteGroupID: first.ID,
+		EntityType:         JavFavoriteEntityJav,
+		EntityID:           javs[0].ID,
+		SortOrder:          1,
+	}).Error; err != nil {
+		t.Fatalf("create existing favorite map: %v", err)
+	}
+
+	counts, err := AddJavsToFavoriteGroups(
+		ctx,
+		[]int64{javs[0].ID, javs[1].ID, javs[1].ID},
+		[]int64{first.ID, second.ID, second.ID},
+	)
+	if err != nil {
+		t.Fatalf("AddJavsToFavoriteGroups: %v", err)
+	}
+	gotCounts := make(map[int64]int64, len(counts))
+	for _, count := range counts {
+		gotCounts[count.ID] = count.FavoriteCount
+	}
+	if gotCounts[javs[0].ID] != 2 || gotCounts[javs[1].ID] != 2 {
+		t.Fatalf("favorite counts = %#v, want both works in two groups", gotCounts)
+	}
+
+	var maps []models.JavFavoriteMap
+	if err := db.Where("entity_type = ?", JavFavoriteEntityJav).
+		Order("jav_favorite_group_id, sort_order").
+		Find(&maps).Error; err != nil {
+		t.Fatalf("load favorite maps: %v", err)
+	}
+	if len(maps) != 4 {
+		t.Fatalf("favorite map count = %d, want 4", len(maps))
+	}
+	if maps[0].JavFavoriteGroupID != first.ID || maps[0].EntityID != javs[0].ID || maps[0].SortOrder != 1 {
+		t.Fatalf("existing first-group favorite changed: %#v", maps[0])
+	}
+
+	if _, err := AddJavsToFavoriteGroups(ctx, []int64{javs[0].ID, javs[1].ID}, []int64{first.ID, second.ID}); err != nil {
+		t.Fatalf("repeat AddJavsToFavoriteGroups: %v", err)
+	}
+	var duplicateSafeCount int64
+	if err := db.Model(&models.JavFavoriteMap{}).Where("entity_type = ?", JavFavoriteEntityJav).Count(&duplicateSafeCount).Error; err != nil {
+		t.Fatalf("count favorite maps after repeat: %v", err)
+	}
+	if duplicateSafeCount != 4 {
+		t.Fatalf("favorite maps after repeat = %d, want 4", duplicateSafeCount)
+	}
+}
+
 func TestListJavFavoriteGroupsCountsOnlyVisibleItems(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
